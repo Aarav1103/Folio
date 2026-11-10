@@ -94,6 +94,11 @@ export default function Reader() {
         let blob = await getBookFile(id)
         if (!blob) {
           if (!meta) throw new Error('Book not found')
+          // An imported book's file only exists on the device it was
+          // imported on, there's no remote copy to fall back to.
+          if (meta.source === 'import') {
+            throw new Error('This book was imported on another device. Import the same file here to read it.')
+          }
           let epubUrl = meta.epubUrl
           if (epubUrl && !epubUrl.startsWith('http')) epubUrl = null
           if (!epubUrl && meta.source === 'archive') {
@@ -180,6 +185,7 @@ export default function Reader() {
           const knownMessages = [
             'Book not found',
             'No epub format available for this book',
+            'This book was imported on another device. Import the same file here to read it.',
             'This book could not be opened, its file may be malformed.',
           ]
           const friendly = knownMessages.includes(err?.message)

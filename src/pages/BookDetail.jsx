@@ -16,6 +16,11 @@ export default function BookDetail() {
   const [loading, setLoading] = useState(true)
   const [offlineReady, setOfflineReady] = useState(false)
   const [downloading, setDownloading] = useState(false)
+  // Set when an Internet Archive item turns out to have no epub file.
+  // Search results aren't pre-checked for this any more (that made
+  // search slow), so it's discovered here, as soon as the page opens.
+  const [noEpubFor, setNoEpubFor] = useState(null) // book id
+  const [actionError, setActionError] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -54,6 +59,37 @@ export default function BookDetail() {
     return () => { cancelled = true }
   }, [id, collection])
 
+  // Looks up the epub for an Internet Archive book that hasn't had one
+  // resolved yet (a no-op for every other book). Throws if the item has
+  // no epub, so callers can stop before adding it to the library.
+  async function ensureEpub(b) {
+    if (b.source !== 'archive' || (b.epubUrl && b.epubUrl.startsWith('http'))) return b
+    const epubUrl = await resolveArchiveEpubUrl(b.sourceId)
+    if (!epubUrl) {
+      setNoEpubFor(b.id)
+      throw new Error('No epub format available for this book')
+    }
+    const resolved = { ...b, epubUrl, needsEpubResolution: false }
+    setBook(resolved)
+    return resolved
+  }
+
+  // Quietly checks in the background, so a book with no epub is flagged
+  // before the user presses anything. Failures here are ignored, the
+  // buttons re-check on click.
+  useEffect(() => {
+    if (!book || book.source !== 'archive' || (book.epubUrl && book.epubUrl.startsWith('http'))) return
+    let cancelled = false
+    resolveArchiveEpubUrl(book.sourceId)
+      .then((url) => {
+        if (cancelled) return
+        if (url) setBook((prev) => (prev ? { ...prev, epubUrl: url, needsEpubResolution: false } : prev))
+        else setNoEpubFor(book.id)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [book])
+
   async function handleToggleCollection() {
     if (isInCollection(book.id)) {
       await removeFromCollection(book.id)
@@ -62,16 +98,29 @@ export default function BookDetail() {
     }
   }
 
-async function handleDownloadOffline() {
-    setDownloading(true)
+  async function handleStartReading() {
+    setActionError('')
     try {
-      let bookToFetch = book
-      if (book.source === 'archive' && !(book.epubUrl && book.epubUrl.startsWith('http'))) {
-        const epubUrl = await resolveArchiveEpubUrl(book.sourceId)
-        if (!epubUrl) throw new Error('No epub format available for this book')
-        bookToFetch = { ...book, epubUrl, needsEpubResolution: false }
-        setBook(bookToFetch)
+      const bookToOpen = await ensureEpub(book)
+      if (!isInCollection(bookToOpen.id)) {
+        await addToCollection({ ...bookToOpen, addedAt: Date.now() })
       }
+      navigate(`/read/${bookToOpen.id}`)
+    } catch (err) {
+      console.error(err)
+      setActionError(
+        err.message === 'No epub format available for this book'
+          ? "This book has no epub file, so it can't be read in Folio."
+          : 'Could not open this book. Check your connection and try again.'
+      )
+    }
+  }
+
+  async function handleDownloadOffline() {
+    setDownloading(true)
+    setActionError('')
+    try {
+      const bookToFetch = await ensureEpub(book)
       const { blob } = await fetchBookContent(bookToFetch)
       await saveBookFile(bookToFetch.id, blob)
       setOfflineReady(true)
@@ -80,7 +129,11 @@ async function handleDownloadOffline() {
       }
     } catch (err) {
       console.error(err)
-      alert('Could not download this book for offline reading.')
+      setActionError(
+        err.message === 'No epub format available for this book'
+          ? "This book has no epub file, so it can't be downloaded."
+          : 'Could not download this book for offline reading.'
+      )
     } finally {
       setDownloading(false)
     }
@@ -108,6 +161,10 @@ async function handleDownloadOffline() {
   }
 
   const inCollection = isInCollection(book.id)
+  const noEpub = noEpubFor === book.id
+  // Imported books live only as a file on the device they were imported
+  // on, there's nothing remote to download.
+  const isImported = book.source === 'import'
 
   return (
     <div className="max-w-3xl mx-auto px-6 py-8">
@@ -155,24 +212,10 @@ async function handleDownloadOffline() {
           )}
 
           <div className="flex flex-wrap gap-3 mt-6 justify-center sm:justify-start">
-              <button
-              onClick={async () => {
-                let bookToOpen = book
-                if (book.source === 'archive' && !(book.epubUrl && book.epubUrl.startsWith('http'))) {
-                  try {
-                    const epubUrl = await resolveArchiveEpubUrl(book.sourceId)
-                    bookToOpen = { ...book, epubUrl, needsEpubResolution: false }
-                    setBook(bookToOpen)
-                  } catch (err) {
-                    console.error(err)
-                  }
-                }
-                if (!isInCollection(bookToOpen.id)) {
-                  await addToCollection({ ...bookToOpen, addedAt: Date.now() })
-                }
-                navigate(`/read/${bookToOpen.id}`)
-              }}
-              className="flex items-center gap-2 bg-teal-600 text-white text-sm font-medium px-5 py-2.5 rounded-lg hover:bg-teal-500 transition-colors"
+            <button
+              onClick={handleStartReading}
+              disabled={noEpub}
+              className="flex items-center gap-2 bg-teal-600 text-white text-sm font-medium px-5 py-2.5 rounded-lg hover:bg-teal-500 transition-colors disabled:opacity-50"
             >
               <BookOpen size={16} />
               {progress?.percentage > 0 ? 'Continue reading' : 'Start reading'}
@@ -185,15 +228,23 @@ async function handleDownloadOffline() {
               {inCollection ? 'In your library' : 'Add to library'}
             </button>
 
-            <button
-              onClick={handleDownloadOffline}
-              disabled={downloading || offlineReady}
-              className="flex items-center gap-2 border border-ink/15 text-sm font-medium px-5 py-2.5 rounded-lg hover:bg-ink/5 transition-colors disabled:opacity-60"
-            >
-              {downloading ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
-              {offlineReady ? 'Available offline' : downloading ? 'Downloading...' : 'Download for offline'}
-            </button>
+            {!isImported && (
+              <button
+                onClick={handleDownloadOffline}
+                disabled={downloading || offlineReady || noEpub}
+                className="flex items-center gap-2 border border-ink/15 text-sm font-medium px-5 py-2.5 rounded-lg hover:bg-ink/5 transition-colors disabled:opacity-60"
+              >
+                {downloading ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+                {offlineReady ? 'Available offline' : downloading ? 'Downloading...' : 'Download for offline'}
+              </button>
+            )}
           </div>
+
+          {(noEpub || actionError) && (
+            <p className="text-sm text-red-600 mt-4">
+              {actionError || "This book has no epub file, so it can't be read in Folio."}
+            </p>
+          )}
         </div>
       </div>
     </div>
