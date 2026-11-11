@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
 import { useLibrary } from '../contexts/LibraryContext'
 import BookCard from '../components/BookCard'
+import ImportEpubButton from '../components/ImportEpubButton'
 
 export default function Collection() {
   const { collection, progressMap } = useLibrary()
@@ -16,7 +17,10 @@ export default function Collection() {
 
   return (
     <div className="px-6 md:px-10 py-8 max-w-5xl mx-auto">
-      <h1 className="font-display text-3xl text-ink mb-6">Your library</h1>
+      <div className="flex items-start justify-between gap-4 mb-6">
+        <h1 className="font-display text-3xl text-ink">Your library</h1>
+        <ImportEpubButton />
+      </div>
 
       <input
         value={query}

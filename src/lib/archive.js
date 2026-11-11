@@ -41,23 +41,13 @@ function mapItem(doc) {
 
 // Internet Archive's search index only covers item-level metadata
 // (title, creator, collection...), not individual file listings, so
-// there's no query-string way to filter by "has an epub file." This
-// checks each result's real file listing directly, the same lookup
-// used to download a book, and drops anything that doesn't actually
-// have one. Items that pass get their epub URL resolved right away.
-async function verifyAndResolve(items) {
-  const checked = await Promise.allSettled(
-    items.map(async (item) => {
-      const url = await resolveArchiveEpubUrl(item.sourceId)
-      if (!url) throw new Error('No epub')
-      return { ...item, epubUrl: url, needsEpubResolution: false }
-    })
-  )
-  return checked
-    .filter((r) => r.status === 'fulfilled')
-    .map((r) => r.value)
-}
-
+// a search result doesn't say whether the item has an epub. Checking
+// every result up front used to cost one proxy call each (about 60 per
+// search), which made search very slow. Results are now returned as-is
+// with needsEpubResolution set, and the real file listing is looked up
+// lazily, only for a book the user actually opens (see
+// resolveArchiveEpubUrl below). Some results may turn out to have no
+// epub, the book page reports that as soon as it opens.
 async function searchRaw(query, { page = 1, rows = 20, sort = '' } = {}) {
   const url = new URL(`${ARCHIVE_ORIGIN}/advancedsearch.php`)
   url.searchParams.set('q', query)
@@ -67,9 +57,7 @@ async function searchRaw(query, { page = 1, rows = 20, sort = '' } = {}) {
   url.searchParams.append('fl[]', 'subject')
   url.searchParams.append('fl[]', 'language')
   url.searchParams.append('fl[]', 'downloads')
-  // Over-fetch since a chunk of these will turn out to have no epub
-  // and get filtered out after the real check below.
-  url.searchParams.set('rows', rows * 3)
+  url.searchParams.set('rows', rows)
   url.searchParams.set('page', page)
   url.searchParams.set('output', 'json')
   if (sort) url.searchParams.set('sort[]', sort)
@@ -78,12 +66,12 @@ async function searchRaw(query, { page = 1, rows = 20, sort = '' } = {}) {
   if (!res.ok) throw new Error('Internet Archive search failed')
   const data = await res.json()
   const docs = data?.response?.docs || []
-  const candidates = docs.map(mapItem)
-  const verified = await verifyAndResolve(candidates)
+  const count = data?.response?.numFound || 0
 
   return {
-    count: data?.response?.numFound || 0,
-    results: verified.slice(0, rows),
+    count,
+    next: page * rows < count,
+    results: docs.map(mapItem),
   }
 }
 
@@ -109,14 +97,25 @@ export async function getBookById(identifier) {
 // Internet Archive's search results don't include the actual epub
 // filename, only that the item exists, so this looks up the item's
 // file listing once and finds the right one.
+//
+// Results (including "no epub", stored as null) are cached for the
+// session, so opening a book's page and then reading it doesn't repeat
+// the lookup. Failed lookups are not cached, so they can be retried.
+const epubUrlCache = new Map()
+
 export async function resolveArchiveEpubUrl(identifier) {
+  if (epubUrlCache.has(identifier)) return epubUrlCache.get(identifier)
+
   const res = await fetch(viaProxy(`${ARCHIVE_ORIGIN}/metadata/${identifier}`))
   if (!res.ok) throw new Error('Could not load this book\'s file listing')
   const data = await res.json()
   const files = data?.files || []
   const epubFile = files.find((f) => f.name?.toLowerCase().endsWith('.epub'))
-  if (!epubFile) return null
   // This is the full absolute URL, fetchBookContent will wrap it
   // through the same /api/fetch-book proxy when actually downloading.
-  return `${ARCHIVE_ORIGIN}/download/${identifier}/${encodeURIComponent(epubFile.name)}`
+  const url = epubFile
+    ? `${ARCHIVE_ORIGIN}/download/${identifier}/${encodeURIComponent(epubFile.name)}`
+    : null
+  epubUrlCache.set(identifier, url)
+  return url
 }

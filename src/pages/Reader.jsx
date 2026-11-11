@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import ePub from 'epubjs'
 import { useLibrary } from '../contexts/LibraryContext'
-import { getBookFile, saveBookFile, getBookMeta } from '../lib/db'
+import { getBookFile, saveBookFile, getBookMeta, getProgressLocal } from '../lib/db'
 import { fetchBookContent } from '../lib/gutendex'
 import { resolveArchiveEpubUrl } from '../lib/archive'
 import {
@@ -15,13 +15,38 @@ const THEMES = {
   dark: { bg: '#1C1917', text: '#E8E4DC', icon: Moon, label: 'Dark' },
 }
 
+// Reads a chapter's file out of the epub and parses it into a document,
+// for epub.js to render from.
+//
+// epub.js chooses a parser from the file's extension: ".xhtml" is read as
+// XML, but ".html" and ".htm" are read as HTML. Many epubs (Calibre
+// conversions especially) hold well-formed XHTML in ".html" files, where
+// an empty element is written "<i/>". An HTML parser doesn't understand
+// that: it reads "<i/>" as "start italics" and nothing ever closes it, and
+// HTML's rules then re-open it in every paragraph that follows. The result
+// is the rest of the chapter coming out italic (and the same for <b/>,
+// <em/>, <a/> and so on). So read the source as XML first, and use the
+// HTML parser only when the file isn't well-formed XML.
+async function loadSectionDocument(book, url) {
+  if (!book.archived) return book.load(url)
+  const text = await book.archive.getText(book.resolve(url))
+  if (typeof text !== 'string') return book.load(url) // not found, let epub.js report it
+
+  // Drop a byte order mark if the file starts with one, it would make the
+  // XML parser reject an otherwise valid document.
+  const source = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+  const xml = new DOMParser().parseFromString(source, 'application/xhtml+xml')
+  if (xml.getElementsByTagName('parsererror').length === 0) return xml
+  return new DOMParser().parseFromString(source, 'text/html')
+}
+
 // Pulls a chapter's content out of epub.js as a plain HTML string, with
 // no iframe involved at all. epub.js's render() return shape has varied
 // across versions (sometimes a full document, sometimes just a body
 // fragment), so this parses it defensively either way and always comes
 // out with just the inner content.
 async function extractSectionHtml(book, section) {
-  const raw = await section.render(book.load.bind(book))
+  const raw = await section.render((url) => loadSectionDocument(book, url))
   const parsed = new DOMParser().parseFromString(raw, 'text/html')
 
   // epub.js usually resolves <img src="..."> automatically, but some
@@ -54,6 +79,28 @@ async function extractSectionHtml(book, section) {
   return html
 }
 
+// Where a chapter starts within the scroll container's content. Measured
+// from layout rather than offsetTop, so it doesn't depend on which
+// ancestor happens to be the offsetParent.
+function chapterTop(container, chapterEl) {
+  return chapterEl.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop
+}
+
+// Scrolls so the top of the screen sits `fraction` (0 to 1) of the way
+// down chapter `index`. If that chapter isn't on the page (it failed to
+// load and was skipped), falls back to the start of the nearest one before.
+function scrollToChapterPosition(container, index, fraction) {
+  const chapters = [...container.querySelectorAll('[data-section-index]')]
+  if (chapters.length === 0) return
+  let target = chapters.find((c) => Number(c.dataset.sectionIndex) === index)
+  let within = fraction
+  if (!target) {
+    target = [...chapters].reverse().find((c) => Number(c.dataset.sectionIndex) < index) || chapters[0]
+    within = 0
+  }
+  container.scrollTop = chapterTop(container, target) + within * target.offsetHeight
+}
+
 export default function Reader() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -81,6 +128,9 @@ export default function Reader() {
 
   useEffect(() => {
     let cancelled = false
+    // Set once the book is on screen, tears down the "keep the saved spot
+    // pinned while images load" listeners below.
+    let stopRestoring = () => {}
 
     async function load() {
       setLoading(true)
@@ -94,6 +144,11 @@ export default function Reader() {
         let blob = await getBookFile(id)
         if (!blob) {
           if (!meta) throw new Error('Book not found')
+          // An imported book's file only exists on the device it was
+          // imported on, there's no remote copy to fall back to.
+          if (meta.source === 'import') {
+            throw new Error('This book was imported on another device. Import the same file here to read it.')
+          }
           let epubUrl = meta.epubUrl
           if (epubUrl && !epubUrl.startsWith('http')) epubUrl = null
           if (!epubUrl && meta.source === 'archive') {
@@ -115,17 +170,31 @@ export default function Reader() {
         const total = book.spine.spineItems.length
         sectionCountRef.current = total
 
-        const existingProgress = getProgress(id)
+        // The library's in-memory progress can still be empty here, if
+        // this page was opened directly (a refresh, a link) before the
+        // library finished loading. Local storage is where progress is
+        // always written first, so fall back to reading it from there.
+        const existingProgress = getProgress(id) || (await getProgressLocal(id))
         let savedIndex = 0
+        let savedFraction = 0 // how far into that chapter, 0 to 1
         let savedPercentage = 0
         if (existingProgress?.location) {
+          savedPercentage = existingProgress.percentage || 0
           try {
             const parsedLoc = JSON.parse(existingProgress.location)
             savedIndex = Math.min(parsedLoc.sectionIndex || 0, total - 1)
+            if (typeof parsedLoc.fraction === 'number') {
+              savedFraction = parsedLoc.fraction
+            } else {
+              // Progress saved by an older version only has the chapter
+              // and a rounded overall percentage, so work the spot within
+              // the chapter back out of those.
+              savedFraction = (savedPercentage / 100) * total - savedIndex
+            }
           } catch {
             savedIndex = 0
           }
-          savedPercentage = existingProgress.percentage || 0
+          savedFraction = Math.min(1, Math.max(0, savedFraction))
         }
 
         // Load sequentially up through the saved position, so resuming
@@ -158,14 +227,36 @@ export default function Reader() {
 
         setLoading(false)
 
-        // After the saved chapters paint, scroll to roughly the right
-        // spot within them based on the saved overall percentage.
+        // After the saved chapters paint, jump to the saved spot: the
+        // saved chapter, and how far down it. (This used to scroll to the
+        // overall percentage of the loaded text's height, but only the
+        // chapters up to the saved one are loaded while the percentage is
+        // for the whole book, so it landed well above where you stopped,
+        // and that wrong spot then got saved as your progress.)
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
             const el = containerRef.current
-            if (el && savedPercentage > 0) {
-              el.scrollTop = (savedPercentage / 100) * el.scrollHeight
+            if (cancelled || !el || (savedIndex === 0 && savedFraction === 0)) return
+
+            const restore = () => scrollToChapterPosition(el, savedIndex, savedFraction)
+            restore()
+
+            // Images earlier in the book (a cover page, illustrations)
+            // have no known height until they load, and when they do they
+            // push everything below down, leaving you above your spot.
+            // Some browsers (Safari) don't compensate for that, so keep
+            // re-applying the position as images load, until the reader
+            // takes over by scrolling or a few seconds have passed.
+            const takeover = ['wheel', 'touchstart', 'mousedown', 'keydown']
+            const timer = setTimeout(() => stopRestoring(), 5000)
+            stopRestoring = () => {
+              clearTimeout(timer)
+              el.removeEventListener('load', restore, true)
+              takeover.forEach((ev) => window.removeEventListener(ev, stopRestoring))
+              stopRestoring = () => {}
             }
+            el.addEventListener('load', restore, true) // load doesn't bubble, so capture it
+            takeover.forEach((ev) => window.addEventListener(ev, stopRestoring, { passive: true }))
           })
         })
       } catch (err) {
@@ -180,6 +271,7 @@ export default function Reader() {
           const knownMessages = [
             'Book not found',
             'No epub format available for this book',
+            'This book was imported on another device. Import the same file here to read it.',
             'This book could not be opened, its file may be malformed.',
           ]
           const friendly = knownMessages.includes(err?.message)
@@ -195,6 +287,7 @@ export default function Reader() {
 
     return () => {
       cancelled = true
+      stopRestoring()
       bookRef.current?.destroy()
     }
   }, [id])
@@ -246,10 +339,11 @@ export default function Reader() {
       let currentIndex = 0
       let fractionWithinChapter = 0
       for (const chEl of chapterEls) {
-        if (chEl.offsetTop <= el.scrollTop + 4) {
+        const top = chapterTop(el, chEl)
+        if (top <= el.scrollTop + 4) {
           currentIndex = Number(chEl.dataset.sectionIndex)
           const chapterHeight = chEl.offsetHeight || 1
-          fractionWithinChapter = Math.min(1, Math.max(0, (el.scrollTop - chEl.offsetTop) / chapterHeight))
+          fractionWithinChapter = Math.min(1, Math.max(0, (el.scrollTop - top) / chapterHeight))
         } else {
           break
         }
@@ -260,7 +354,12 @@ export default function Reader() {
         : 0
       setPercentage(overallPct)
       saveProgress(id, {
-        location: JSON.stringify({ sectionIndex: currentIndex }),
+        // The exact spot, not just the rounded overall percentage, so
+        // resuming can land precisely where reading stopped.
+        location: JSON.stringify({
+          sectionIndex: currentIndex,
+          fraction: Math.round(fractionWithinChapter * 1000) / 1000,
+        }),
         percentage: overallPct,
       })
     }

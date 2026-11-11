@@ -5,21 +5,6 @@ import * as archive from '../lib/archive'
 import BookCard from '../components/BookCard'
 import { Search, Loader2 } from 'lucide-react'
 
-// Runs both sources in parallel and merges whatever succeeds, so if one
-// source has a hiccup, the other still shows results instead of the
-// whole page failing.
-async function mergedFetch(gutendexFn, archiveFn) {
-  const [gResult, aResult] = await Promise.allSettled([gutendexFn(), archiveFn()])
-  const results = [
-    ...(gResult.status === 'fulfilled' ? gResult.value.results : []),
-    ...(aResult.status === 'fulfilled' ? aResult.value.results : []),
-  ]
-  if (gResult.status === 'rejected' && aResult.status === 'rejected') {
-    throw new Error('Both sources failed')
-  }
-  return results
-}
-
 export default function Discover() {
   // The current search/topic lives in the URL (?q=... or ?topic=...),
   // not just component state, so refreshing, sharing a link, or using
@@ -31,11 +16,20 @@ export default function Discover() {
 
   const [query, setQuery] = useState(urlQuery)
   const [activeTopic, setActiveTopic] = useState(urlTopic)
-  const [results, setResults] = useState([])
+  // Each source keeps its own results, so whichever answers first can be
+  // shown right away without waiting for the other (Internet Archive is
+  // much slower than Gutendex). Gutendex results are listed first.
+  const [gutResults, setGutResults] = useState([])
+  const [archResults, setArchResults] = useState([])
+  const [gutHasMore, setGutHasMore] = useState(false)
+  const [archHasMore, setArchHasMore] = useState(false)
+  const [archiveLoading, setArchiveLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
-  const [hasMore, setHasMore] = useState(true)
   const [error, setError] = useState('')
+
+  const results = [...gutResults, ...archResults]
+  const hasMore = gutHasMore || archHasMore
 
   // Remembers how to fetch the *current* search/topic/popular view at
   // an arbitrary page, so "Load more" can just ask for page + 1
@@ -43,24 +37,62 @@ export default function Discover() {
   // or looking at the popular list.
   const fetcherRef = useRef(null)
   const pageRef = useRef(1)
+  // Bumped on every fetch. A response that arrives after a newer search
+  // has started is stale and gets dropped, instead of overwriting it.
+  const requestIdRef = useRef(0)
 
-  const runFetch = useCallback(async (makeFetchers, { append = false } = {}) => {
+  const runFetch = useCallback(async (makeFetchers, { append = false, skipGutendex = false, skipArchive = false } = {}) => {
+    const requestId = ++requestIdRef.current
+    const isCurrent = () => requestId === requestIdRef.current
     const targetPage = append ? pageRef.current + 1 : 1
-    if (append) setLoadingMore(true)
-    else setLoading(true)
-    setError('')
-    try {
-      const { gutendexFn, archiveFn } = makeFetchers(targetPage)
-      const newResults = await mergedFetch(gutendexFn, archiveFn)
-      setResults((prev) => (append ? [...prev, ...newResults] : newResults))
-      setHasMore(newResults.length > 0)
-      pageRef.current = targetPage
-    } catch (err) {
-      if (!append) setError('Could not load books right now.')
-    } finally {
-      setLoading(false)
-      setLoadingMore(false)
+
+    if (append) {
+      setLoadingMore(true)
+    } else {
+      setLoading(true)
+      setGutResults([])
+      setArchResults([])
+      setGutHasMore(false)
+      setArchHasMore(false)
     }
+    setError('')
+
+    const { gutendexFn, archiveFn } = makeFetchers(targetPage)
+
+    // Wraps one source: applies its results the moment they arrive.
+    // Resolves true on success, false if that source failed (a failed
+    // source just contributes nothing, the other one still shows).
+    const track = (fn, setItems, setMore) =>
+      fn().then(
+        (r) => {
+          if (!isCurrent()) return false
+          setItems((prev) => (append ? [...prev, ...r.results] : r.results))
+          setMore(!!r.next)
+          setLoading(false)
+          return true
+        },
+        () => {
+          if (isCurrent()) setMore(false)
+          return false
+        }
+      )
+
+    if (!skipArchive) setArchiveLoading(true)
+    const tasks = [
+      skipGutendex ? Promise.resolve(false) : track(gutendexFn, setGutResults, setGutHasMore),
+      skipArchive
+        ? Promise.resolve(false)
+        : track(archiveFn, setArchResults, setArchHasMore).finally(() => {
+            if (isCurrent()) setArchiveLoading(false)
+          }),
+    ]
+    const outcomes = await Promise.all(tasks)
+
+    if (!isCurrent()) return
+    if (!append && !outcomes.some(Boolean)) setError('Could not load books right now.')
+    pageRef.current = targetPage
+    setLoading(false)
+    setLoadingMore(false)
   }, [])
 
   const loadPopular = useCallback(() => {
@@ -119,7 +151,14 @@ export default function Discover() {
   }
 
   function handleLoadMore() {
-    if (fetcherRef.current) runFetch(fetcherRef.current, { append: true })
+    if (!fetcherRef.current) return
+    // Skip a source that already ran out of pages, so it isn't asked for
+    // a page that doesn't exist.
+    runFetch(fetcherRef.current, {
+      append: true,
+      skipGutendex: !gutHasMore,
+      skipArchive: !archHasMore,
+    })
   }
 
   return (
@@ -159,7 +198,7 @@ export default function Discover() {
         </div>
       ) : error ? (
         <p className="text-sm text-red-600 text-center py-12">{error}</p>
-      ) : results.length === 0 ? (
+      ) : results.length === 0 && !archiveLoading ? (
         <p className="text-sm text-ink-muted text-center py-12">No books found. Try a different search.</p>
       ) : (
         <>
@@ -168,6 +207,13 @@ export default function Discover() {
               <BookCard key={book.id} book={book} />
             ))}
           </div>
+
+          {archiveLoading && (
+            <div className="flex items-center justify-center py-8 text-ink-muted gap-2">
+              <Loader2 size={15} className="animate-spin" />
+              <span className="text-xs">Searching Internet Archive...</span>
+            </div>
+          )}
 
           {hasMore && (
             <div className="flex justify-center mt-8">

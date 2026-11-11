@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useLibrary } from '../contexts/LibraryContext'
 import BookCard from '../components/BookCard'
+import ImportEpubButton from '../components/ImportEpubButton'
 import { useNavigate } from 'react-router-dom'
 
 export default function Home() {
@@ -19,13 +20,14 @@ export default function Home() {
 
   return (
     <div className="px-6 md:px-10 py-8 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex items-start justify-between gap-4 mb-8">
         <div>
           <h1 className="font-display text-3xl text-ink">Your shelf</h1>
           <p className="text-ink-muted text-sm mt-1">
             {isOnline ? (syncing ? 'Syncing...' : 'Up to date') : 'Offline, changes will sync when you reconnect'}
           </p>
         </div>
+        <ImportEpubButton />
       </div>
 
       {currentlyReading.length > 0 && (
