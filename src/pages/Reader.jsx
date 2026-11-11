@@ -15,13 +15,38 @@ const THEMES = {
   dark: { bg: '#1C1917', text: '#E8E4DC', icon: Moon, label: 'Dark' },
 }
 
+// Reads a chapter's file out of the epub and parses it into a document,
+// for epub.js to render from.
+//
+// epub.js chooses a parser from the file's extension: ".xhtml" is read as
+// XML, but ".html" and ".htm" are read as HTML. Many epubs (Calibre
+// conversions especially) hold well-formed XHTML in ".html" files, where
+// an empty element is written "<i/>". An HTML parser doesn't understand
+// that: it reads "<i/>" as "start italics" and nothing ever closes it, and
+// HTML's rules then re-open it in every paragraph that follows. The result
+// is the rest of the chapter coming out italic (and the same for <b/>,
+// <em/>, <a/> and so on). So read the source as XML first, and use the
+// HTML parser only when the file isn't well-formed XML.
+async function loadSectionDocument(book, url) {
+  if (!book.archived) return book.load(url)
+  const text = await book.archive.getText(book.resolve(url))
+  if (typeof text !== 'string') return book.load(url) // not found, let epub.js report it
+
+  // Drop a byte order mark if the file starts with one, it would make the
+  // XML parser reject an otherwise valid document.
+  const source = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+  const xml = new DOMParser().parseFromString(source, 'application/xhtml+xml')
+  if (xml.getElementsByTagName('parsererror').length === 0) return xml
+  return new DOMParser().parseFromString(source, 'text/html')
+}
+
 // Pulls a chapter's content out of epub.js as a plain HTML string, with
 // no iframe involved at all. epub.js's render() return shape has varied
 // across versions (sometimes a full document, sometimes just a body
 // fragment), so this parses it defensively either way and always comes
 // out with just the inner content.
 async function extractSectionHtml(book, section) {
-  const raw = await section.render(book.load.bind(book))
+  const raw = await section.render((url) => loadSectionDocument(book, url))
   const parsed = new DOMParser().parseFromString(raw, 'text/html')
 
   // epub.js usually resolves <img src="..."> automatically, but some

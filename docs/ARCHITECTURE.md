@@ -226,7 +226,7 @@ Every book has a string id whose prefix says where it came from. `BookDetail` an
 
 1. Load the epub blob from IndexedDB. If absent, download it through the proxy, then store it.
 2. Parse it with `ePub(arrayBuffer)`.
-3. For each chapter (spine item), render it to an HTML string, resolve its images to blob URLs, and strip `<script>` tags.
+3. For each chapter (spine item), read the chapter's source, render it to an HTML string, resolve its images to blob URLs, and strip `<script>` tags. The source is parsed as XML first and as HTML only if it is not well-formed XML. This matters because epub.js picks its parser from the file extension and reads `.html` files as HTML, which mangles XHTML self-closing tags: an empty `<i/>` becomes "start italics, never stop", and the rest of the chapter comes out italic. Many Calibre-made epubs put XHTML in `.html` files.
 4. Insert chapters into one natively scrolling `div` with `dangerouslySetInnerHTML`. Chapters load lazily: the next one is added when the reader is within about one and a half screens of the bottom.
 5. After scrolling stops (150 ms debounce, plus on touch end), work out which chapter is at the top and how far into it, and save that.
 6. On open, load chapters up to the saved one, scroll to the saved chapter and position, and keep re-applying that position while images load, until the reader scrolls or 5 seconds pass.
