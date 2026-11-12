@@ -2,8 +2,32 @@ import { createContext, useContext, useEffect, useState, useCallback, useRef } f
 import { supabase } from '../lib/supabase'
 import { useAuth } from './AuthContext'
 import * as localdb from '../lib/db'
+import * as cloud from '../lib/cloudFiles'
 
 const LibraryContext = createContext(null)
+
+// Books whose file is over the storage size limit. Remembered on this device
+// so they are not tried again on every start.
+const tooLargeKey = (userId) => `folio-cloud-toolarge:${userId}`
+function readTooLarge(userId) {
+  try { return new Set(JSON.parse(localStorage.getItem(tooLargeKey(userId)) || '[]')) } catch { return new Set() }
+}
+function markTooLarge(userId, bookId) {
+  const set = readTooLarge(userId)
+  set.add(bookId)
+  localStorage.setItem(tooLargeKey(userId), JSON.stringify([...set]))
+}
+
+// Copies an imported book's file from this device to the user's account.
+// Returns 'ok', 'too_large', or 'missing' (no file on this device). Throws if
+// the network or server failed, so the caller can queue a retry.
+async function pushBookFile(userId, bookId) {
+  const blob = await localdb.getBookFile(bookId)
+  if (!blob) return 'missing'
+  const status = await cloud.uploadBookFile(userId, bookId, blob)
+  if (status === 'too_large') markTooLarge(userId, bookId)
+  return status
+}
 
 export function LibraryProvider({ children }) {
   const { user, isAuthenticated } = useAuth()
@@ -11,6 +35,8 @@ export function LibraryProvider({ children }) {
   const [progressMap, setProgressMap] = useState({}) // bookId -> progress object
   const [isOnline, setIsOnline] = useState(navigator.onLine)
   const [syncing, setSyncing] = useState(false)
+  // for imported books: 'synced' (a copy is in the account), 'too_large', or absent if not known yet
+  const [cloudFiles, setCloudFiles] = useState({})
   const initialized = useRef(false)
   const collectionRef = useRef([])
   const progressRef = useRef({})
@@ -18,6 +44,35 @@ export function LibraryProvider({ children }) {
 
   useEffect(() => { collectionRef.current = collection }, [collection])
   useEffect(() => { progressRef.current = progressMap }, [progressMap])
+
+  // Brings the account's stored files in line with this device: finds which
+  // imported books already have a copy, and uploads the ones this device has
+  // a file for but the account does not (including books imported before
+  // this feature existed). Needs no database column, the stored files are
+  // listed instead.
+  async function syncCloudFiles() {
+    try {
+      const inAccount = await cloud.listBookFiles(user.id)
+      const tooLarge = readTooLarge(user.id)
+      const status = {}
+      const books = (await localdb.getAllBooksMeta()).filter((b) => b.source === 'import')
+      for (const b of books) {
+        if (inAccount.has(b.id)) { status[b.id] = 'synced'; continue }
+        if (tooLarge.has(b.id)) { status[b.id] = 'too_large'; continue }
+        try {
+          const result = await pushBookFile(user.id, b.id)
+          if (result !== 'missing') status[b.id] = result === 'ok' ? 'synced' : result
+        } catch (err) {
+          console.error('Could not copy a book to the account, will retry', b.id, err)
+        }
+      }
+      // remote copies of books this device only knows from the library
+      for (const id of inAccount) status[id] = 'synced'
+      setCloudFiles((prev) => ({ ...prev, ...status }))
+    } catch (err) {
+      console.error('File sync failed', err)
+    }
+  }
 
   // Track connectivity
   useEffect(() => {
@@ -48,6 +103,7 @@ export function LibraryProvider({ children }) {
       if (isAuthenticated && isOnline) {
         lastSyncRef.current = Date.now()
         await reconcileWithRemote(localBooks, pMap)
+        await syncCloudFiles()
       }
       initialized.current = true
     }
@@ -59,7 +115,7 @@ export function LibraryProvider({ children }) {
   // Whenever we come back online and are authenticated, flush queued changes
   useEffect(() => {
     if (isOnline && isAuthenticated && initialized.current) {
-      flushPendingSync()
+      flushPendingSync().then(syncCloudFiles)
     }
   }, [isOnline, isAuthenticated])
 
@@ -186,6 +242,10 @@ export function LibraryProvider({ children }) {
             .delete()
             .eq('user_id', user.id)
             .eq('book_id', entry.bookId)
+          if (entry.bookId.startsWith('import-')) await cloud.removeBookFile(user.id, entry.bookId).catch(() => {})
+        } else if (entry.type === 'upload_file') {
+          const status = await pushBookFile(user.id, entry.bookId)
+          if (status !== 'missing') setCloudFiles((prev) => ({ ...prev, [entry.bookId]: status === 'ok' ? 'synced' : status }))
         }
         await localdb.clearPendingSync(entry.id)
       } catch (err) {
@@ -202,6 +262,7 @@ export function LibraryProvider({ children }) {
       return [...prev, book]
     })
 
+    let recorded = false
     if (isAuthenticated && isOnline) {
       try {
         await supabase.from('collection_items').upsert({
@@ -215,18 +276,35 @@ export function LibraryProvider({ children }) {
           epub_url: book.epubUrl,
           text_url: book.textUrl,
         }, { onConflict: 'user_id,book_id' })
-        return
+        recorded = true
       } catch (err) {
         console.error('Remote add failed, queuing', err)
       }
     }
-    await localdb.queuePendingSync({ type: 'add_book', book })
+    if (!recorded) await localdb.queuePendingSync({ type: 'add_book', book })
+
+    // An imported book's file only exists on this device, so copy it to the
+    // account too, so the book can be opened on the user's other devices.
+    if (book.source === 'import') {
+      let uploaded = false
+      if (isAuthenticated && isOnline) {
+        try {
+          const status = await pushBookFile(user.id, book.id)
+          setCloudFiles((prev) => ({ ...prev, [book.id]: status === 'ok' ? 'synced' : status }))
+          uploaded = true
+        } catch (err) {
+          console.error('File upload failed, queuing', err)
+        }
+      }
+      if (!uploaded) await localdb.queuePendingSync({ type: 'upload_file', bookId: book.id })
+    }
   }, [isAuthenticated, isOnline, user?.id])
 
   const removeFromCollection = useCallback(async (bookId) => {
     await localdb.deleteBookMeta(bookId)
     await localdb.deleteBookFile(bookId)
     setCollection((prev) => prev.filter((b) => b.id !== bookId))
+    setCloudFiles((prev) => { const next = { ...prev }; delete next[bookId]; return next })
 
     if (isAuthenticated && isOnline) {
       try {
@@ -234,6 +312,7 @@ export function LibraryProvider({ children }) {
           .delete()
           .eq('user_id', user.id)
           .eq('book_id', bookId)
+        if (bookId.startsWith('import-')) cloud.removeBookFile(user.id, bookId).catch(() => {})
         return
       } catch (err) {
         console.error('Remote remove failed, queuing', err)
@@ -277,6 +356,7 @@ export function LibraryProvider({ children }) {
     progressMap,
     isOnline,
     syncing,
+    cloudFiles,
     addToCollection,
     removeFromCollection,
     saveProgress,

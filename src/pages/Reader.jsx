@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import ePub from 'epubjs'
 import { useLibrary } from '../contexts/LibraryContext'
+import { useAuth } from '../contexts/AuthContext'
+import { downloadBookFile } from '../lib/cloudFiles'
 import { getBookFile, saveBookFile, getBookMeta, getProgressLocal } from '../lib/db'
 import { fetchBookContent } from '../lib/gutendex'
 import { resolveArchiveEpubUrl } from '../lib/archive'
@@ -79,6 +81,10 @@ async function extractSectionHtml(book, section) {
   return html
 }
 
+// Shown when an imported book's file is not on this device and can't be fetched.
+const MSG_OFFLINE = 'This book is not on this device yet. Connect to the internet to download it from your account.'
+const MSG_NOT_COPIED = 'This book was imported on another device, and that device has not copied it to your account yet. Open Folio there while online, or import the file here.'
+
 // Where a chapter starts within the scroll container's content. Measured
 // from layout rather than offsetTop, so it doesn't depend on which
 // ancestor happens to be the offsetParent.
@@ -105,6 +111,7 @@ export default function Reader() {
   const { id } = useParams()
   const navigate = useNavigate()
   const { saveProgress, getProgress, collection } = useLibrary()
+  const { user } = useAuth()
 
   const containerRef = useRef(null)
   const bookRef = useRef(null)
@@ -144,11 +151,22 @@ export default function Reader() {
         let blob = await getBookFile(id)
         if (!blob) {
           if (!meta) throw new Error('Book not found')
-          // An imported book's file only exists on the device it was
-          // imported on, there's no remote copy to fall back to.
           if (meta.source === 'import') {
-            throw new Error('This book was imported on another device. Import the same file here to read it.')
+            // An imported book's file is copied to the user's account when
+            // it is imported, so a device that doesn't have it downloads it
+            // from there once and keeps it.
+            let remote = null
+            try {
+              remote = user ? await downloadBookFile(user.id, id) : null
+            } catch {
+              throw new Error(MSG_OFFLINE)
+            }
+            if (!remote) throw new Error(MSG_NOT_COPIED)
+            blob = remote
+            saveBookFile(id, blob).catch(() => {})
           }
+        }
+        if (!blob) {
           let epubUrl = meta.epubUrl
           if (epubUrl && !epubUrl.startsWith('http')) epubUrl = null
           if (!epubUrl && meta.source === 'archive') {
@@ -271,7 +289,8 @@ export default function Reader() {
           const knownMessages = [
             'Book not found',
             'No epub format available for this book',
-            'This book was imported on another device. Import the same file here to read it.',
+            MSG_OFFLINE,
+            MSG_NOT_COPIED,
             'This book could not be opened, its file may be malformed.',
           ]
           const friendly = knownMessages.includes(err?.message)
