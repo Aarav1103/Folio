@@ -23,7 +23,29 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // PDF import (pdf.js and the converter) is large and rarely used, so
+        // it is not part of the install download. It is cached the first
+        // time a PDF is imported instead (see the rules below).
+        globIgnores: ['**/assets/pdf-*.js', '**/assets/convert-*.js'],
         runtimeCaching: [
+          {
+            // pdf.js, its worker, and the converter, versioned by their file name
+            urlPattern: ({ url }) =>
+              url.origin === self.location.origin && /\/assets\/(pdf|convert|pdf\.worker\.min)-[^/]*\.m?js$/.test(url.pathname),
+            handler: 'CacheFirst',
+            options: { cacheName: 'pdf-import-cache', expiration: { maxEntries: 12 } }
+          },
+          {
+            // Tesseract's worker script and engine, fetched from a CDN on first use.
+            // (The language data is kept in IndexedDB by Tesseract itself.)
+            urlPattern: /^https:\/\/cdn\.jsdelivr\.net\/npm\/(tesseract\.js|tesseract\.js-core|@tesseract\.js-data)/i,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'ocr-engine-cache',
+              expiration: { maxEntries: 20, maxAgeSeconds: 31536000 },
+              cacheableResponse: { statuses: [0, 200] },
+            }
+          },
           {
             urlPattern: /^https:\/\/gutendex\.com\/.*/i,
             handler: 'NetworkFirst',

@@ -39,7 +39,9 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
-async function fileId(buffer, file) {
+// A short hash of a file's bytes, used as its id. Also used for PDFs, so the
+// same PDF imported on another device gets the same id.
+export async function fileHash(buffer, file) {
   if (globalThis.crypto?.subtle) {
     const digest = await crypto.subtle.digest('SHA-256', buffer)
     const hex = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')
@@ -69,7 +71,9 @@ async function downscaleCover(blobUrl) {
   }
 }
 
-export async function importEpubFile(file) {
+// `idBuffer` is for a PDF that was converted: the id comes from the PDF's
+// bytes, not the epub made from it, so it does not depend on conversion details.
+export async function importEpubFile(file, { idBuffer } = {}) {
   if (!/\.epub$/i.test(file.name)) {
     throw new ImportError('Only .epub files can be imported.')
   }
@@ -110,7 +114,7 @@ export async function importEpubFile(file) {
     book.destroy()
   }
 
-  const hash = await fileId(buffer, file)
+  const hash = await fileHash(idBuffer || buffer, file)
   const id = `import-${hash}`
   const title = metadata?.title?.trim() || file.name.replace(/\.epub$/i, '')
   const author = metadata?.creator?.trim() || 'Unknown author'

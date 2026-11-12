@@ -10,6 +10,7 @@ across devices. Works offline on your phone once a book is downloaded.
 - Open library search via the free Gutendex API (no signup needed)
 - Offline support via a PWA service worker and local IndexedDB storage
 - Cross-device sync wired up for Supabase (auth, collection, and progress tables)
+- Import your own books as EPUB or PDF files. A PDF is converted to a reflowable book on your device, and scanned PDFs are read with on-device text recognition, so nothing is uploaded
 
 ## What you need to do (about 15-20 minutes, no code)
 
