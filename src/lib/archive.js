@@ -16,9 +16,20 @@ function viaProxy(absoluteUrl) {
   return `/api/fetch-book?url=${encodeURIComponent(absoluteUrl)}`
 }
 
+// Only English books. An item's language is stored however the uploader
+// typed it: the Archive recommends three-letter codes ("eng"), but
+// "English" and "en" turn up too, so all three are matched. Items with no
+// language recorded at all are left out as well, there is no way to know
+// whether they are English.
+const ENGLISH_FILTER = '(language:eng OR language:English OR language:en)'
+
 // Items with access-restricted-item:true are part of the controlled
 // lending library and are deliberately excluded here.
-const PUBLIC_DOMAIN_FILTER = 'mediatype:texts AND NOT access-restricted-item:true'
+//
+// This filter is used for search, topics and the popular list. Looking up
+// one specific book by identifier (getBookById) does not use it, so a book
+// that is already in the library, or opened from a link, still opens.
+const PUBLIC_DOMAIN_FILTER = `mediatype:texts AND NOT access-restricted-item:true AND ${ENGLISH_FILTER}`
 
 function mapItem(doc) {
   const identifier = doc.identifier
@@ -31,7 +42,7 @@ function mapItem(doc) {
     authors: Array.isArray(doc.creator) ? doc.creator : doc.creator ? [doc.creator] : [],
     cover: `${ARCHIVE_ORIGIN}/services/img/${identifier}`,
     subjects: Array.isArray(doc.subject) ? doc.subject : doc.subject ? [doc.subject] : [],
-    languages: doc.language ? [doc.language] : [],
+    languages: Array.isArray(doc.language) ? doc.language : doc.language ? [doc.language] : [],
     downloadCount: doc.downloads || 0,
     epubUrl: null,
     textUrl: null,
