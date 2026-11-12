@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useLibrary } from '../contexts/LibraryContext'
+import { useAuth } from '../contexts/AuthContext'
+import { downloadBookFile } from '../lib/cloudFiles'
 import { getBookById } from '../lib/gutendex'
 import { hasOfflineFile, saveBookFile } from '../lib/db'
 import { fetchBookContent } from '../lib/gutendex'
@@ -10,7 +12,8 @@ import { ArrowLeft, Plus, Check, Download, BookOpen, Loader2 } from 'lucide-reac
 export default function BookDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { collection, addToCollection, removeFromCollection, isInCollection, getProgress } = useLibrary()
+  const { collection, addToCollection, removeFromCollection, isInCollection, getProgress, cloudFiles, isOnline } = useLibrary()
+  const { user } = useAuth()
 
   const [book, setBook] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -120,6 +123,14 @@ export default function BookDetail() {
     setDownloading(true)
     setActionError('')
     try {
+      if (book.source === 'import') {
+        // an imported book's file comes from the user's account
+        const remote = await downloadBookFile(user.id, book.id)
+        if (!remote) throw new Error('NOT_IN_ACCOUNT')
+        await saveBookFile(book.id, remote)
+        setOfflineReady(true)
+        return
+      }
       const bookToFetch = await ensureEpub(book)
       const { blob } = await fetchBookContent(bookToFetch)
       await saveBookFile(bookToFetch.id, blob)
@@ -132,7 +143,9 @@ export default function BookDetail() {
       setActionError(
         err.message === 'No epub format available for this book'
           ? "This book has no epub file, so it can't be downloaded."
-          : 'Could not download this book for offline reading.'
+          : err.message === 'NOT_IN_ACCOUNT'
+            ? "This book isn't in your account yet. Open Folio on the device you imported it on, while online, or import the file here."
+            : 'Could not download this book for offline reading.'
       )
     } finally {
       setDownloading(false)
@@ -165,6 +178,14 @@ export default function BookDetail() {
   // Imported books live only as a file on the device they were imported
   // on, there's nothing remote to download.
   const isImported = book.source === 'import'
+  // where an imported book's file is: on this device, and/or copied to the account
+  const cloudStatus = cloudFiles[book.id]
+  const importedStatus =
+    cloudStatus === 'synced' && offlineReady ? 'Saved to your account, so you can open it on your other devices.'
+    : cloudStatus === 'synced' ? 'Saved in your account. It downloads to this device when you open it.'
+    : cloudStatus === 'too_large' ? 'This file is too large to copy to your account (the limit is 50 MB), so it is only on this device.'
+    : offlineReady ? (isOnline ? 'Copying to your account...' : 'Will be copied to your account when you are back online.')
+    : 'Not on this device yet. It downloads from your account when you open it.'
 
   return (
     <div className="max-w-3xl mx-auto px-6 py-8">
@@ -228,17 +249,17 @@ export default function BookDetail() {
               {inCollection ? 'In your library' : 'Add to library'}
             </button>
 
-            {!isImported && (
-              <button
-                onClick={handleDownloadOffline}
-                disabled={downloading || offlineReady || noEpub}
-                className="flex items-center gap-2 border border-ink/15 text-sm font-medium px-5 py-2.5 rounded-lg hover:bg-ink/5 transition-colors disabled:opacity-60"
-              >
-                {downloading ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
-                {offlineReady ? 'Available offline' : downloading ? 'Downloading...' : 'Download for offline'}
-              </button>
-            )}
+            <button
+              onClick={handleDownloadOffline}
+              disabled={downloading || offlineReady || noEpub}
+              className="flex items-center gap-2 border border-ink/15 text-sm font-medium px-5 py-2.5 rounded-lg hover:bg-ink/5 transition-colors disabled:opacity-60"
+            >
+              {downloading ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+              {offlineReady ? 'Available offline' : downloading ? 'Downloading...' : isImported ? 'Download to this device' : 'Download for offline'}
+            </button>
           </div>
+
+          {isImported && <p className="text-xs text-ink-muted mt-3">{importedStatus}</p>}
 
           {(noEpub || actionError) && (
             <p className="text-sm text-red-600 mt-4">

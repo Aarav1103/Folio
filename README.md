@@ -10,7 +10,7 @@ across devices. Works offline on your phone once a book is downloaded.
 - Open library search via the free Gutendex API (no signup needed)
 - Offline support via a PWA service worker and local IndexedDB storage
 - Cross-device sync wired up for Supabase (auth, collection, and progress tables)
-- Import your own books as EPUB or PDF files. A PDF is converted to a reflowable book on your device, and scanned PDFs are read with on-device text recognition, so nothing is uploaded
+- Import your own books as EPUB or PDF files. A PDF is converted to a reflowable book on your device, and scanned PDFs are read with on-device text recognition, so the PDF is never uploaded. Imported books can optionally be copied to your own private Supabase storage so they open on all your devices (see step 2b)
 
 ## What you need to do (about 15-20 minutes, no code)
 
@@ -23,6 +23,13 @@ In your Supabase project, open the **SQL Editor** in the left sidebar, click
 **New query**, paste in everything from `supabase-schema.sql` (included in
 this project), and click **Run**. This creates the two tables Folio needs
 and locks them down so each user can only see their own data.
+
+### 2b. Optional: open imported books on all your devices
+Imported books (EPUB or PDF files you add yourself) are stored on the device that
+imported them. To have them follow you to your other devices, run
+`supabase-storage.sql` the same way (SQL Editor, New query, paste, Run). It creates a
+private storage bucket that only you can read. Skip it and everything else still works,
+imported books just stay on one device.
 
 ### 3. Get your API keys
 In Supabase, go to **Project Settings -> API**. Copy the **Project URL** and
