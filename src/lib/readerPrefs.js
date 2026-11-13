@@ -1,4 +1,4 @@
-// Reader settings (theme, text size, reading hand), kept on this device so
+// Reader settings (theme, text size, text width, reading hand), kept on this device so
 // they are still there after a reload or the next time a book is opened.
 //
 // Everything read back from storage is checked, so a stale or hand-edited value
@@ -8,10 +8,14 @@
 
 export const THEME_KEY = 'folio-reader-theme'
 export const SIZE_KEY = 'folio-reader-size'
+export const WIDTH_KEY = 'folio-reader-width'
 export const HAND_KEY = 'folio-handedness' // name kept from before, so saved choices carry over
 
 export const DEFAULT_THEME = 'light'
 export const DEFAULT_HAND = 'right'
+// How wide the column of text is on a computer (it has no effect on a phone or tablet)
+export const WIDTHS = ['narrow', 'medium', 'wide', 'full']
+export const DEFAULT_WIDTH = 'medium'
 export const DEFAULT_SIZE = 18
 export const MIN_SIZE = 14
 export const MAX_SIZE = 28
@@ -55,6 +59,11 @@ export function loadFontSize(storage = defaultStorage()) {
   return Number.isInteger(n) && n >= MIN_SIZE && n <= MAX_SIZE && onStep ? n : DEFAULT_SIZE
 }
 
+export function loadWidth(storage = defaultStorage()) {
+  const value = get(storage, WIDTH_KEY)
+  return WIDTHS.includes(value) ? value : DEFAULT_WIDTH
+}
+
 export function loadHand(storage = defaultStorage()) {
   const value = get(storage, HAND_KEY)
   return value === 'left' || value === 'right' ? value : DEFAULT_HAND
@@ -62,4 +71,5 @@ export function loadHand(storage = defaultStorage()) {
 
 export const saveTheme = (value, storage = defaultStorage()) => set(storage, THEME_KEY, value)
 export const saveFontSize = (value, storage = defaultStorage()) => set(storage, SIZE_KEY, value)
+export const saveWidth = (value, storage = defaultStorage()) => set(storage, WIDTH_KEY, value)
 export const saveHand = (value, storage = defaultStorage()) => set(storage, HAND_KEY, value)

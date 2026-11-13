@@ -48,6 +48,14 @@ body {
 }
 
 @layer utilities {
+  /* "The current text colour at N% opacity". Tailwind 3 cannot make these itself
+     (so bg-current/5 produced no CSS at all), which left the reader's selected
+     option, slider track and hover circles invisible. They are used by the
+     reader controls, which take the chosen theme's text colour. */
+  .bg-current\/5 { background-color: color-mix(in srgb, currentColor 5%, transparent); }
+  .bg-current\/10 { background-color: color-mix(in srgb, currentColor 10%, transparent); }
+  .bg-current\/15 { background-color: color-mix(in srgb, currentColor 15%, transparent); }
+
   .reading-text {
     font-family: 'Lora', Georgia, serif;
     font-size: var(--reading-size, 18px);
