@@ -2,18 +2,22 @@ import { useState, useMemo } from 'react'
 import { useLibrary } from '../contexts/LibraryContext'
 import BookCard from '../components/BookCard'
 import ImportEpubButton from '../components/ImportEpubButton'
+import { sortByRecency } from '../lib/recency'
 
 export default function Collection() {
   const { collection, progressMap } = useLibrary()
   const [query, setQuery] = useState('')
 
+  // Most recently added or read first
+  const ordered = useMemo(() => sortByRecency(collection, progressMap), [collection, progressMap])
+
   const filtered = useMemo(() => {
-    if (!query.trim()) return collection
+    if (!query.trim()) return ordered
     const q = query.toLowerCase()
-    return collection.filter(
+    return ordered.filter(
       (b) => b.title.toLowerCase().includes(q) || b.author.toLowerCase().includes(q)
     )
-  }, [collection, query])
+  }, [ordered, query])
 
   return (
     <div className="px-6 md:px-10 py-8 max-w-5xl mx-auto">

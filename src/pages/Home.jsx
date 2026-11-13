@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { useLibrary } from '../contexts/LibraryContext'
 import BookCard from '../components/BookCard'
 import ImportEpubButton from '../components/ImportEpubButton'
+import { sortByRecency } from '../lib/recency'
 import { useNavigate } from 'react-router-dom'
 
 export default function Home() {
@@ -14,9 +15,7 @@ export default function Home() {
       .sort((a, b) => (progressMap[b.id]?.updatedAt || 0) - (progressMap[a.id]?.updatedAt || 0))
   }, [collection, progressMap])
 
-  const recentlyAdded = useMemo(() => {
-    return [...collection].sort((a, b) => (b.addedAt || 0) > (a.addedAt || 0) ? 1 : -1)
-  }, [collection])
+  const shelf = useMemo(() => sortByRecency(collection, progressMap), [collection, progressMap])
 
   return (
     <div className="px-6 md:px-10 py-8 max-w-5xl mx-auto">
@@ -53,7 +52,7 @@ export default function Home() {
           Your collection
         </h2>
 
-        {recentlyAdded.length === 0 ? (
+        {shelf.length === 0 ? (
           <div className="border border-dashed border-ink/15 rounded-xl py-16 px-6 text-center">
             <p className="font-display text-lg text-ink mb-2">Your shelf is empty</p>
             <p className="text-ink-muted text-sm mb-5">
@@ -68,7 +67,7 @@ export default function Home() {
           </div>
         ) : (
           <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-5">
-            {recentlyAdded.map((book) => (
+            {shelf.map((book) => (
               <BookCard
                 key={book.id}
                 book={book}

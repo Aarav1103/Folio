@@ -1,12 +1,27 @@
+import process from 'node:process'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
+// Which build this is, shown on the Account page so it is easy to tell whether
+// a phone is running the latest deploy. Vercel provides the commit at build time.
+const BUILD = {
+  commit: (process.env.VERCEL_GIT_COMMIT_SHA || 'dev').slice(0, 7),
+  time: new Date().toISOString(),
+}
+
 export default defineConfig({
+  define: {
+    'import.meta.env.VITE_BUILD_COMMIT': JSON.stringify(BUILD.commit),
+    'import.meta.env.VITE_BUILD_TIME': JSON.stringify(BUILD.time),
+  },
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // 'prompt': a new version waits until the user taps "Reload" in the
+      // banner (src/components/UpdatePrompt.jsx), so an update never reloads the
+      // page in the middle of a book, an import or an OCR run.
+      registerType: 'prompt',
       includeAssets: ['favicon.ico', 'icons/*.png'],
       manifest: {
         name: 'Folio',
