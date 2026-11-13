@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import ePub from 'epubjs'
 import { useLibrary } from '../contexts/LibraryContext'
@@ -11,8 +11,8 @@ import {
   ArrowLeft, Sun, Moon, Coffee, Minus, Plus as PlusIcon, Check, BookOpen,
 } from 'lucide-react'
 import {
-  loadTheme, loadFontSize, loadHand, saveTheme, saveFontSize, saveHand,
-  MIN_SIZE, MAX_SIZE, SIZE_STEP,
+  loadTheme, loadFontSize, loadWidth, loadHand, saveTheme, saveFontSize, saveWidth, saveHand,
+  WIDTHS, MIN_SIZE, MAX_SIZE, SIZE_STEP,
 } from '../lib/readerPrefs'
 
 const THEMES = {
@@ -20,6 +20,10 @@ const THEMES = {
   sepia: { bg: '#F4ECD8', text: '#3B2F20', icon: Coffee, label: 'Sepia' },
   dark: { bg: '#1C1917', text: '#E8E4DC', icon: Moon, label: 'Dark' },
 }
+
+// Widest the column of text may be on a computer, in px (the box, padding included).
+// On a phone or tablet the column is always the screen's width, up to 700.
+const WIDTH_PX = { narrow: 700, medium: 900, wide: 1100, full: null }
 
 // Reads a chapter's file out of the epub and parses it into a document,
 // for epub.js to render from.
@@ -85,6 +89,15 @@ async function extractSectionHtml(book, section) {
   return html
 }
 
+// One chapter's HTML. Memoised so that a re-render of the reader (a scroll
+// updating progress, a setting changing) leaves it alone: setting innerHTML
+// again throws away every paragraph, which loses a text selection, makes the
+// browser reparse the chapter, and removes the element a scroll position is
+// anchored to.
+const Chapter = memo(function Chapter({ index, html }) {
+  return <div data-section-index={index} dangerouslySetInnerHTML={{ __html: html }} />
+})
+
 // Shown when an imported book's file is not on this device and can't be fetched.
 const MSG_OFFLINE = 'This book is not on this device yet. Connect to the internet to download it from your account.'
 const MSG_NOT_COPIED = 'This book was imported on another device, and that device has not copied it to your account yet. Open Folio there while online, or import the file here.'
@@ -111,6 +124,54 @@ function scrollToChapterPosition(container, index, fraction) {
   container.scrollTop = chapterTop(container, target) + within * target.offsetHeight
 }
 
+// The paragraph (or heading, list item, picture) at the top of the screen and
+// how far into it the top edge is. Far more exact than a fraction of the whole
+// chapter, because paragraphs do not all grow by the same amount when the
+// layout changes. The element itself is kept, and it stays in the page while
+// only the style around it changes. Returns null if the chapter has no such
+// blocks (text sitting loose in a div, say); the caller then uses the chapter
+// fraction instead.
+const BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, pre, figure, img, td'
+function readBlockAnchor(container) {
+  const containerTop = container.getBoundingClientRect().top
+  for (const el of container.querySelectorAll(BLOCK_SELECTOR)) {
+    if (el.querySelector(BLOCK_SELECTOR)) continue // only the innermost block
+    const rect = el.getBoundingClientRect()
+    if (rect.bottom > containerTop + 1) {
+      const into = containerTop - rect.top // negative while the top edge is in the gap above it
+      return { el, into, fraction: into / (rect.height || 1) }
+    }
+  }
+  return null
+}
+
+// Scrolls so the top edge is at the same place in that block as when it was read
+function scrollToBlockAnchor(container, anchor) {
+  if (!anchor.el.isConnected) return false
+  const rect = anchor.el.getBoundingClientRect()
+  const into = anchor.into < 0 ? anchor.into : anchor.fraction * rect.height
+  container.scrollTop += rect.top + into - container.getBoundingClientRect().top
+  return true
+}
+
+// Which chapter is at the top of the screen and how far down it (0 to 1),
+// the same spot that is saved as reading progress.
+function readAnchor(container) {
+  let index = 0
+  let fraction = 0
+  for (const chEl of container.querySelectorAll('[data-section-index]')) {
+    const top = chapterTop(container, chEl)
+    if (top <= container.scrollTop + 4) {
+      index = Number(chEl.dataset.sectionIndex)
+      const chapterHeight = chEl.offsetHeight || 1
+      fraction = Math.min(1, Math.max(0, (container.scrollTop - top) / chapterHeight))
+    } else {
+      break
+    }
+  }
+  return { index, fraction }
+}
+
 export default function Reader() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -132,11 +193,31 @@ export default function Reader() {
   const [percentage, setPercentage] = useState(0)
   const [bookTitle, setBookTitle] = useState('')
   const [sections, setSections] = useState([]) // [{ index, html }]
+  const [textWidth, setTextWidth] = useState(loadWidth)
   const [handedness, setHandedness] = useState(loadHand)
 
   useEffect(() => saveTheme(theme), [theme])
   useEffect(() => saveFontSize(fontSize), [fontSize])
+  useEffect(() => saveWidth(textWidth), [textWidth])
   useEffect(() => saveHand(handedness), [handedness])
+
+  // Changing the text size or width reflows the chapters, so the same scroll
+  // offset would land somewhere else in the book. Note the spot before the
+  // change, and put it back as soon as the new layout is in place.
+  const anchorRef = useRef(null)
+  function keepPlace(change) {
+    const el = containerRef.current
+    if (el) anchorRef.current = readBlockAnchor(el) || { chapter: readAnchor(el) }
+    change()
+  }
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current
+    const el = containerRef.current
+    if (!anchor || !el) return
+    anchorRef.current = null
+    if (anchor.chapter) scrollToChapterPosition(el, anchor.chapter.index, anchor.chapter.fraction)
+    else scrollToBlockAnchor(el, anchor)
+  }, [fontSize, textWidth])
 
   useEffect(() => {
     let cancelled = false
@@ -359,19 +440,7 @@ export default function Reader() {
       // Find which chapter is actually in view right now, not just the
       // most recently loaded one, otherwise scrolling back up to reread
       // something earlier would still report your furthest point.
-      const chapterEls = el.querySelectorAll('[data-section-index]')
-      let currentIndex = 0
-      let fractionWithinChapter = 0
-      for (const chEl of chapterEls) {
-        const top = chapterTop(el, chEl)
-        if (top <= el.scrollTop + 4) {
-          currentIndex = Number(chEl.dataset.sectionIndex)
-          const chapterHeight = chEl.offsetHeight || 1
-          fractionWithinChapter = Math.min(1, Math.max(0, (el.scrollTop - top) / chapterHeight))
-        } else {
-          break
-        }
-      }
+      const { index: currentIndex, fraction: fractionWithinChapter } = readAnchor(el)
 
       const overallPct = sectionCountRef.current
         ? Math.min(100, Math.round(((currentIndex + fractionWithinChapter) / sectionCountRef.current) * 100))
@@ -425,6 +494,12 @@ export default function Reader() {
           theming API needed since this is just plain DOM now. */}
       <style>{`
         .reader-content { max-width: 700px; margin: 0 auto; padding: 6vh 24px 12vh; }
+        /* The text width setting applies on computers only (a mouse), never on a phone or tablet. */
+        .reader-desktop-only { display: none; }
+        @media (hover: hover) and (pointer: fine) {
+          .reader-content { max-width: ${WIDTH_PX[textWidth] ? WIDTH_PX[textWidth] + 'px' : 'none'};${textWidth === 'full' ? ' padding-left: 4vw; padding-right: 4vw;' : ''} }
+          .reader-desktop-only { display: block; }
+        }
         .reader-content, .reader-content p { color: ${t.text}; font-family: 'Lora', Georgia, serif; }
         .reader-content { font-size: ${fontSize}px; line-height: 1.85; }
         .reader-content p { margin: 0 0 1.1em; }
@@ -521,7 +596,7 @@ export default function Reader() {
             <p className="text-[11px] font-semibold uppercase tracking-wide opacity-50 mb-2.5">Text size</p>
             <div className="flex items-center justify-between gap-3">
               <button
-                onClick={() => setFontSize((s) => Math.max(MIN_SIZE, s - SIZE_STEP))}
+                onClick={() => keepPlace(() => setFontSize((s) => Math.max(MIN_SIZE, s - SIZE_STEP)))}
                 className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-current/5 transition-colors"
               >
                 <Minus size={15} />
@@ -533,11 +608,28 @@ export default function Reader() {
                 />
               </div>
               <button
-                onClick={() => setFontSize((s) => Math.min(MAX_SIZE, s + SIZE_STEP))}
+                onClick={() => keepPlace(() => setFontSize((s) => Math.min(MAX_SIZE, s + SIZE_STEP)))}
                 className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-current/5 transition-colors"
               >
                 <PlusIcon size={15} />
               </button>
+            </div>
+
+            <div className="reader-desktop-only">
+              <p className="text-[11px] font-semibold uppercase tracking-wide opacity-50 mb-2.5 mt-5">Text width</p>
+              <div className="flex bg-current/5 rounded-full p-1">
+                {WIDTHS.map((w) => (
+                  <button
+                    key={w}
+                    onClick={() => keepPlace(() => setTextWidth(w))}
+                    className={`flex-1 text-[12px] font-medium py-1.5 rounded-full capitalize transition-colors ${
+                      textWidth === w ? 'bg-current/15' : ''
+                    }`}
+                  >
+                    {w}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <p className="text-[11px] font-semibold uppercase tracking-wide opacity-50 mb-2.5 mt-5">Reading hand</p>
@@ -591,7 +683,7 @@ export default function Reader() {
         >
           <div className="reader-content">
             {sections.map((s) => (
-              <div key={s.index} data-section-index={s.index} dangerouslySetInnerHTML={{ __html: s.html }} />
+              <Chapter key={s.index} index={s.index} html={s.html} />
             ))}
           </div>
         </div>
