@@ -36,6 +36,10 @@ export default function Account() {
         <p className="text-sm font-medium text-ink">{collection.length} books in your library</p>
       </div>
 
+      <p className="text-xs text-ink-muted mb-6">
+        Version {import.meta.env.VITE_BUILD_COMMIT}, built {new Date(import.meta.env.VITE_BUILD_TIME).toLocaleString()}
+      </p>
+
       <button
         onClick={handleSignOut}
         className="flex items-center gap-2 text-sm font-medium text-red-600 px-4 py-2.5 rounded-lg hover:bg-red-50 transition-colors"

@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { LibraryProvider } from './contexts/LibraryContext'
 import NavShell from './components/NavShell'
+import UpdatePrompt from './components/UpdatePrompt'
 
 import Login from './pages/Login'
 import Landing from './pages/Landing'
@@ -94,6 +95,7 @@ export default function App() {
       <AuthProvider>
         <LibraryProvider>
           <AppRoutes />
+          <UpdatePrompt />
         </LibraryProvider>
       </AuthProvider>
     </BrowserRouter>
