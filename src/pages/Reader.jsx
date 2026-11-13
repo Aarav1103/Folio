@@ -10,6 +10,10 @@ import { resolveArchiveEpubUrl } from '../lib/archive'
 import {
   ArrowLeft, Sun, Moon, Coffee, Minus, Plus as PlusIcon, Check, BookOpen,
 } from 'lucide-react'
+import {
+  loadTheme, loadFontSize, loadHand, saveTheme, saveFontSize, saveHand,
+  MIN_SIZE, MAX_SIZE, SIZE_STEP,
+} from '../lib/readerPrefs'
 
 const THEMES = {
   light: { bg: '#FAF8F3', text: '#1A1814', icon: Sun, label: 'Light' },
@@ -122,16 +126,17 @@ export default function Reader() {
   const [error, setError] = useState('')
   const [controlsVisible, setControlsVisible] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [theme, setTheme] = useState('light')
-  const [fontSize, setFontSize] = useState(18)
+  // Theme, text size and reading hand are remembered on this device (src/lib/readerPrefs.js)
+  const [theme, setTheme] = useState(() => loadTheme(Object.keys(THEMES)))
+  const [fontSize, setFontSize] = useState(loadFontSize)
   const [percentage, setPercentage] = useState(0)
   const [bookTitle, setBookTitle] = useState('')
   const [sections, setSections] = useState([]) // [{ index, html }]
-  const [handedness, setHandedness] = useState(() => localStorage.getItem('folio-handedness') || 'right')
+  const [handedness, setHandedness] = useState(loadHand)
 
-  useEffect(() => {
-    localStorage.setItem('folio-handedness', handedness)
-  }, [handedness])
+  useEffect(() => saveTheme(theme), [theme])
+  useEffect(() => saveFontSize(fontSize), [fontSize])
+  useEffect(() => saveHand(handedness), [handedness])
 
   useEffect(() => {
     let cancelled = false
@@ -516,7 +521,7 @@ export default function Reader() {
             <p className="text-[11px] font-semibold uppercase tracking-wide opacity-50 mb-2.5">Text size</p>
             <div className="flex items-center justify-between gap-3">
               <button
-                onClick={() => setFontSize((s) => Math.max(14, s - 2))}
+                onClick={() => setFontSize((s) => Math.max(MIN_SIZE, s - SIZE_STEP))}
                 className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-current/5 transition-colors"
               >
                 <Minus size={15} />
@@ -524,11 +529,11 @@ export default function Reader() {
               <div className="flex-1 h-1.5 rounded-full bg-current/10 relative overflow-hidden">
                 <div
                   className="absolute inset-y-0 left-0 rounded-full"
-                  style={{ width: `${((fontSize - 14) / 14) * 100}%`, background: '#2D6A5E' }}
+                  style={{ width: `${((fontSize - MIN_SIZE) / (MAX_SIZE - MIN_SIZE)) * 100}%`, background: '#2D6A5E' }}
                 />
               </div>
               <button
-                onClick={() => setFontSize((s) => Math.min(28, s + 2))}
+                onClick={() => setFontSize((s) => Math.min(MAX_SIZE, s + SIZE_STEP))}
                 className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-current/5 transition-colors"
               >
                 <PlusIcon size={15} />
