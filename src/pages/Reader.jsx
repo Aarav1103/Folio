@@ -576,7 +576,12 @@ export default function Reader() {
         <div
           ref={containerRef}
           className="flex-1 overflow-y-auto"
-          style={{ WebkitOverflowScrolling: 'touch' }}
+          style={{
+            WebkitOverflowScrolling: 'touch',
+            // scrollbar colours that suit the chosen theme (see index.css)
+            '--scroll-thumb': `${t.text}40`,
+            '--scroll-thumb-hover': `${t.text}80`,
+          }}
           onClick={() => setControlsVisible((v) => !v)}
         >
           <div className="reader-content">

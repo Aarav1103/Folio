@@ -158,7 +158,7 @@ api/
 src/
   main.jsx                Entry point, mounts <App/>
   App.jsx                 Provider tree, routes, route guards
-  index.css               Tailwind layers, font import, helper classes
+  index.css               Tailwind layers, font import, helper classes, custom scrollbar (laptops and desktops only)
   lib/
     supabase.js           Supabase client (reads VITE_ env vars)
     db.js                 IndexedDB wrapper (books, files, progress, pendingSync)
@@ -477,4 +477,5 @@ These come from reading the code. They have not been exploited or load-tested.
 | Server relay behavior | `api/fetch-book.js` |
 | Offline caching and the PWA manifest | `vite.config.js` |
 | Colors, fonts | `tailwind.config.js` and `src/index.css` |
+| Scrollbar look (slim, no arrows; the reader tints it per theme through `--scroll-thumb`) | `src/index.css`, and the reading surface in `src/pages/Reader.jsx` |
 | Routes and guards | `src/App.jsx` |
