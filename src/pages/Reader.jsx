@@ -1,6 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import ePub from 'epubjs'
+import WidthIcon from '../components/WidthIcon'
 import { useLibrary } from '../contexts/LibraryContext'
 import { useAuth } from '../contexts/AuthContext'
 import { downloadBookFile } from '../lib/cloudFiles'
@@ -24,6 +25,7 @@ const THEMES = {
 // Widest the column of text may be on a computer, in px (the box, padding included).
 // On a phone or tablet the column is always the screen's width, up to 700.
 const WIDTH_PX = { narrow: 700, medium: 900, wide: 1100, full: null }
+const WIDTH_LABEL = { narrow: 'Narrow', medium: 'Medium', wide: 'Wide', full: 'Full' } // tooltips and screen readers, the buttons show pictures
 
 // Reads a chapter's file out of the epub and parses it into a document,
 // for epub.js to render from.
@@ -616,17 +618,23 @@ export default function Reader() {
             </div>
 
             <div className="reader-desktop-only">
-              <p className="text-[11px] font-semibold uppercase tracking-wide opacity-50 mb-2.5 mt-5">Text width</p>
-              <div className="flex bg-current/5 rounded-full p-1">
+              <p className="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-wide opacity-50 mb-2.5 mt-5">
+                <span>Text width</span>
+                <span className="font-normal normal-case tracking-normal">{WIDTH_LABEL[textWidth]}</span>
+              </p>
+              <div role="group" aria-label="Text width" className="flex bg-current/5 rounded-full p-1">
                 {WIDTHS.map((w) => (
                   <button
                     key={w}
                     onClick={() => keepPlace(() => setTextWidth(w))}
-                    className={`flex-1 text-[12px] font-medium py-1.5 rounded-full capitalize transition-colors ${
+                    aria-label={WIDTH_LABEL[w]}
+                    aria-pressed={textWidth === w}
+                    title={WIDTH_LABEL[w]}
+                    className={`flex-1 flex items-center justify-center py-2 rounded-full transition-colors ${
                       textWidth === w ? 'bg-current/15' : ''
                     }`}
                   >
-                    {w}
+                    <WidthIcon width={w} />
                   </button>
                 ))}
               </div>

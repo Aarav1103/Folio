@@ -183,6 +183,7 @@ src/
     NavShell.jsx          Desktop sidebar and mobile bottom nav
     BookCard.jsx          Cover tile used in every grid
     ImportEpubButton.jsx  File picker for .epub and .pdf, results, resume of stopped scans
+    WidthIcon.jsx         The pictures on the reader's text width buttons
     UpdatePrompt.jsx      "New version ready" banner and the periodic check for updates
     PdfImportDialog.jsx   Dialog for one PDF: analysis, scan question, progress, cancel
   pages/
@@ -259,7 +260,7 @@ Every book has a string id whose prefix says where it came from. `BookDetail` an
 
 Display options are remembered on the device (`src/lib/readerPrefs.js`): theme (light, sepia, dark), text size (14 to 28 px), text width and reading hand. Stored values are checked on load and fall back to the defaults if they are unknown or out of range.
 
-**Text width** (Narrow 700 px, Medium 900 px, Wide 1100 px, Full) sets how wide the column of text may be. The default is Medium. It applies **only on a computer**: the rule sits inside `@media (hover: hover) and (pointer: fine)`, and the control is hidden elsewhere, so a phone or a touch tablet always gets the column it had before (up to 700 px).
+**Text width** (Narrow 700 px, Medium 900 px, Wide 1100 px, Full) sets how wide the column of text may be. The four buttons are small pictures (`WidthIcon.jsx`: two page margins with lines of text between them that get longer from Narrow to Full) with the name as a tooltip and screen-reader label, and the heading shows the chosen name. The default is Medium. It applies **only on a computer**: the rule sits inside `@media (hover: hover) and (pointer: fine)`, and the control is hidden elsewhere, so a phone or a touch tablet always gets the column it had before (up to 700 px).
 
 **Keeping your place when the layout changes.** Changing the text size or width reflows the chapters, which would otherwise leave the same scroll offset pointing somewhere else in the book. Before the change the reader notes the innermost block (paragraph, heading, list item, picture) at the top edge and how far into it the edge is, and after the new layout is in place (`useLayoutEffect`) scrolls so that same spot is at the top again. It falls back to the chapter fraction if a chapter has no such blocks. This relies on the chapter elements staying in the page, which is why chapters are memoised.
 
@@ -486,6 +487,6 @@ These come from reading the code. They have not been exploited or load-tested.
 | Offline caching and the PWA manifest | `vite.config.js` |
 | Colors, fonts | `tailwind.config.js` and `src/index.css` |
 | Reader settings (theme, text size, text width, reading hand): saving, loading and checking stored values | `src/lib/readerPrefs.js`, used by `src/pages/Reader.jsx` |
-| Text width options and the keep-your-place logic in the reader | `WIDTH_PX`, `readBlockAnchor` and `keepPlace` in `src/pages/Reader.jsx` |
+| Text width options, their pictures, and the keep-your-place logic in the reader | `WIDTH_PX`, `readBlockAnchor` and `keepPlace` in `src/pages/Reader.jsx`, `src/components/WidthIcon.jsx` |
 | Scrollbar look (slim, no arrows; the reader tints it per theme through `--scroll-thumb`) | `src/index.css`, and the reading surface in `src/pages/Reader.jsx` |
 | Routes and guards | `src/App.jsx` |
