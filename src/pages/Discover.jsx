@@ -277,7 +277,7 @@ export default function Discover() {
         <>
           <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-5">
             {results.map((book) => (
-              <BookCard key={book.id} book={book} />
+              <BookCard key={book.id} book={book} size="grid" />
             ))}
           </div>
 
