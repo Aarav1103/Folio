@@ -2,12 +2,16 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { searchBooks, getPopularBooks, getBooksByTopic, CURATED_TOPICS } from '../lib/gutendex'
 import * as archive from '../lib/archive'
+import * as google from '../lib/googlebooks'
 import BookCard from '../components/BookCard'
 import { Search, Loader2 } from 'lucide-react'
 
 // The Internet Archive is only searched when this is turned on. Its books are
 // scans uploaded by libraries and the public, and are not checked for quality.
 const ARCHIVE_KEY = 'folio-include-archive'
+// Google Books (free epubs) is also only searched when turned on.
+const GOOGLE_KEY = 'folio-include-google'
+const NO_RESULTS = () => Promise.resolve({ results: [], next: false })
 
 export default function Discover() {
   // The current search/topic lives in the URL (?q=... or ?topic=...),
@@ -27,6 +31,9 @@ export default function Discover() {
   const [archResults, setArchResults] = useState([])
   const [gutHasMore, setGutHasMore] = useState(false)
   const [archHasMore, setArchHasMore] = useState(false)
+  const [googResults, setGoogResults] = useState([])
+  const [googHasMore, setGoogHasMore] = useState(false)
+  const [googleLoading, setGoogleLoading] = useState(false)
   const [archiveLoading, setArchiveLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -34,9 +41,11 @@ export default function Discover() {
   const [includeArchive, setIncludeArchive] = useState(() => localStorage.getItem(ARCHIVE_KEY) === 'true')
   // the fetch code below reads the latest choice from here
   const archiveOnRef = useRef(includeArchive)
+  const [includeGoogle, setIncludeGoogle] = useState(() => localStorage.getItem(GOOGLE_KEY) === 'true')
+  const googleOnRef = useRef(includeGoogle)
 
-  const results = [...gutResults, ...archResults]
-  const hasMore = gutHasMore || archHasMore
+  const results = [...gutResults, ...googResults, ...archResults]
+  const hasMore = gutHasMore || archHasMore || googHasMore
 
   // Remembers how to fetch the *current* search/topic/popular view at
   // an arbitrary page, so "Load more" can just ask for page + 1
@@ -48,7 +57,7 @@ export default function Discover() {
   // has started is stale and gets dropped, instead of overwriting it.
   const requestIdRef = useRef(0)
 
-  const runFetch = useCallback(async (makeFetchers, { append = false, skipGutendex = false, skipArchive = false } = {}) => {
+  const runFetch = useCallback(async (makeFetchers, { append = false, skipGutendex = false, skipArchive = false, skipGoogle = false } = {}) => {
     const requestId = ++requestIdRef.current
     const isCurrent = () => requestId === requestIdRef.current
     const targetPage = append ? pageRef.current + 1 : 1
@@ -59,13 +68,16 @@ export default function Discover() {
       setLoading(true)
       setGutResults([])
       setArchResults([])
+      setGoogResults([])
       setGutHasMore(false)
       setArchHasMore(false)
+      setGoogHasMore(false)
     }
     setError('')
 
-    const { gutendexFn, archiveFn } = makeFetchers(targetPage)
+    const { gutendexFn, archiveFn, googleFn } = makeFetchers(targetPage)
     const noArchive = skipArchive || !archiveOnRef.current
+    const noGoogle = skipGoogle || !googleOnRef.current
 
     // Wraps one source: applies its results the moment they arrive.
     // Resolves true on success, false if that source failed (a failed
@@ -86,12 +98,18 @@ export default function Discover() {
       )
 
     if (!noArchive) setArchiveLoading(true)
+    if (!noGoogle) setGoogleLoading(true)
     const tasks = [
       skipGutendex ? Promise.resolve(false) : track(gutendexFn, setGutResults, setGutHasMore),
       noArchive
         ? Promise.resolve(false)
         : track(archiveFn, setArchResults, setArchHasMore).finally(() => {
             if (isCurrent()) setArchiveLoading(false)
+          }),
+      noGoogle
+        ? Promise.resolve(false)
+        : track(googleFn, setGoogResults, setGoogHasMore).finally(() => {
+            if (isCurrent()) setGoogleLoading(false)
           }),
     ]
     const outcomes = await Promise.all(tasks)
@@ -107,6 +125,7 @@ export default function Discover() {
     const makeFetchers = (page) => ({
       gutendexFn: () => getPopularBooks({ page }),
       archiveFn: () => archive.getPopularBooks({ page }),
+      googleFn: NO_RESULTS, // Google Books needs something to search for
     })
     fetcherRef.current = makeFetchers
     runFetch(makeFetchers)
@@ -116,6 +135,7 @@ export default function Discover() {
     const makeFetchers = (page) => ({
       gutendexFn: () => searchBooks(q, { page }),
       archiveFn: () => archive.searchBooks(q, { page }),
+      googleFn: () => google.searchBooks(q, { page }),
     })
     fetcherRef.current = makeFetchers
     runFetch(makeFetchers)
@@ -125,6 +145,7 @@ export default function Discover() {
     const makeFetchers = (page) => ({
       gutendexFn: () => getBooksByTopic(topic, { page }),
       archiveFn: () => archive.getBooksByTopic(topic, { page }),
+      googleFn: () => google.getBooksByTopic(topic, { page }),
     })
     fetcherRef.current = makeFetchers
     runFetch(makeFetchers)
@@ -142,7 +163,7 @@ export default function Discover() {
       loadPopular()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlQuery, urlTopic, includeArchive])
+  }, [urlQuery, urlTopic, includeArchive, includeGoogle])
 
   function handleSearch(e) {
     e.preventDefault()
@@ -159,6 +180,12 @@ export default function Discover() {
     setIncludeArchive(on)
   }
 
+  function handleGoogleToggle(on) {
+    localStorage.setItem(GOOGLE_KEY, String(on))
+    googleOnRef.current = on
+    setIncludeGoogle(on)
+  }
+
   function handleTopic(topic) {
     setQuery('')
     setSearchParams({ topic })
@@ -172,6 +199,7 @@ export default function Discover() {
       append: true,
       skipGutendex: !gutHasMore,
       skipArchive: !archHasMore,
+      skipGoogle: !googHasMore,
     })
   }
 
@@ -205,20 +233,36 @@ export default function Discover() {
         ))}
       </div>
 
-      <label className="flex items-start gap-2.5 text-xs text-ink-muted -mt-4 mb-8 max-w-xl cursor-pointer">
-        <input
-          type="checkbox"
-          checked={includeArchive}
-          onChange={(e) => handleArchiveToggle(e.target.checked)}
-          className="mt-0.5 accent-teal-600"
-        />
-        <span>
-          <span className="font-medium text-ink">Also search the Internet Archive</span>
-          <br />
-          Scans uploaded by libraries and the public. They are not checked for quality, so some look rough or have
-          scanning errors. Only English books that pass a basic check are shown.
-        </span>
-      </label>
+      <div className="-mt-4 mb-8 flex flex-col gap-3 max-w-xl">
+        <label className="flex items-start gap-2.5 text-xs text-ink-muted cursor-pointer">
+          <input
+            type="checkbox"
+            checked={includeGoogle}
+            onChange={(e) => handleGoogleToggle(e.target.checked)}
+            className="mt-0.5 accent-teal-600"
+          />
+          <span>
+            <span className="font-medium text-ink">Also search Google Books (free ebooks)</span>
+            <br />
+            Books Google offers free as an epub, mostly public domain. Only English books with a download are shown.
+            Needs a search or a topic.
+          </span>
+        </label>
+        <label className="flex items-start gap-2.5 text-xs text-ink-muted cursor-pointer">
+          <input
+            type="checkbox"
+            checked={includeArchive}
+            onChange={(e) => handleArchiveToggle(e.target.checked)}
+            className="mt-0.5 accent-teal-600"
+          />
+          <span>
+            <span className="font-medium text-ink">Also search the Internet Archive</span>
+            <br />
+            Scans uploaded by libraries and the public. They are not checked for quality, so some look rough or have
+            scanning errors. Only English books that pass a basic check are shown.
+          </span>
+        </label>
+      </div>
 
       {loading ? (
         <div className="flex items-center justify-center py-20 text-ink-muted gap-2">
@@ -227,7 +271,7 @@ export default function Discover() {
         </div>
       ) : error ? (
         <p className="text-sm text-red-600 text-center py-12">{error}</p>
-      ) : results.length === 0 && !archiveLoading ? (
+      ) : results.length === 0 && !archiveLoading && !googleLoading ? (
         <p className="text-sm text-ink-muted text-center py-12">No books found. Try a different search.</p>
       ) : (
         <>
@@ -236,6 +280,13 @@ export default function Discover() {
               <BookCard key={book.id} book={book} />
             ))}
           </div>
+
+          {googleLoading && (
+            <div className="flex items-center justify-center py-8 text-ink-muted gap-2">
+              <Loader2 size={15} className="animate-spin" />
+              <span className="text-xs">Searching Google Books...</span>
+            </div>
+          )}
 
           {archiveLoading && (
             <div className="flex items-center justify-center py-8 text-ink-muted gap-2">

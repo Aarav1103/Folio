@@ -141,6 +141,7 @@ Supabase provides accounts and the two sync tables. The browser talks to it dire
 |---|---|---|
 | Gutendex (`gutendex.com/books`), an API over Project Gutenberg | Browser calls it directly | Search, topics, popular, by id; epub and text URLs; covers |
 | Internet Archive (`advancedsearch.php`, `/metadata/<id>`, `/download/...`) | Through `/api/fetch-book` | Search results, file listings, epub files |
+| Google Books (`googleapis.com/books/v1/volumes`), free epubs only | Browser calls it directly, no API key; the epub is downloaded through `/api/fetch-book` | Search by text or subject, one book by id, an epub download link, covers |
 | Internet Archive covers (`/services/img/<id>`), Gutenberg covers | Straight from `<img>` tags | Cover images |
 | `cdn.jsdelivr.net` (Tesseract.js worker script, engine and per-language data) | Browser, only when a scanned PDF is converted | Text recognition. English data is about 3 MB, kept in IndexedDB by Tesseract after the first download |
 
@@ -161,7 +162,8 @@ src/
     supabase.js           Supabase client (reads VITE_ env vars)
     db.js                 IndexedDB wrapper (books, files, progress, pendingSync)
     gutendex.js           Gutendex client, book mapping, fetchBookContent()
-    archive.js            Internet Archive client, lazy epub lookup
+    archive.js            Internet Archive client, lazy epub lookup, vetting of results
+    googlebooks.js        Google Books client (free epubs only), vetting of results
     importEpub.js         Reads a local .epub file into a book + stored file
     cloudFiles.js         Upload, download, list and delete a book's file in Supabase Storage
     importPdf.js          Opens a PDF, converts it to an epub, hands it to importEpub
@@ -231,6 +233,7 @@ Every book has a string id whose prefix says where it came from. `BookDetail` an
 | Id | Source | File comes from |
 |---|---|---|
 | `gutenberg-<number>` | Project Gutenberg via Gutendex | Proxy download from gutenberg.org |
+| `google-<volume id>` | Google Books (free epub) | Proxy download from the link Google gives, fetched and checked before the book is added |
 | `archive-<identifier>` | Internet Archive | Proxy download from archive.org, epub URL looked up lazily |
 | `import-<32 hex chars>` | A file the user imported: an epub, or a PDF converted to an epub (the hash is of the PDF) | Copied to the user's account when imported, so any device can download it on first open |
 
@@ -258,6 +261,7 @@ Display options (theme, text size, left/right hand) are local to the page. Only 
 - Gutendex is always searched. The Internet Archive is searched only if the user ticks "Also search the Internet Archive" under the topics (off by default, remembered in `localStorage` under `folio-include-archive`), because its books are scans uploaded by libraries and the public and are not checked for quality. When both are on they are queried in parallel, each source's results appear as soon as that source answers (Gutendex results are listed first, and a spinner shows while the Archive is pending), and a failed source simply contributes nothing.
 - Each fetch gets a request id, and responses from an older search are dropped.
 - Archive results are not checked for an epub at search time. The check happens when a book page opens (`BookDetail`) or the book is read.
+- Google Books is a third source, also off unless ticked ("Also search Google Books (free ebooks)", `localStorage` key `folio-include-google`). It needs something to search for, so it adds results for a text search or a topic but not to the plain popular view. Only books Google offers as a free, fully viewable epub in English, with an author and a book-like title, are shown. Opening one downloads the epub first and checks it really is an epub (a zip, starting with "PK"). If Google answers with a sign-in page or refuses, the book is not added to the library and the user is told.
 - Archive results are vetted on the client, from each item's own metadata (`isReputable` in `src/lib/archive.js`): every listed language must be English, the title must be in Latin script, must not read as another language, a file name, a catalogue, report or magazine, the item must have an author, must not be in a public-upload or periodical collection, and must have at least 100 downloads. This is a filter and not a guarantee, since the Archive does not review uploads and the language, title and author are typed in by whoever uploaded the item. Looking up one known book by id (opening a book already in the library) is not vetted.
 
 ### 5.7 Styling
@@ -444,9 +448,10 @@ These come from reading the code. They have not been exploited or load-tested.
 6. **Imported books need the storage setup to follow you.** Without `supabase-storage.sql` they stay on the device that imported them. With it, files over 50 MB (the free-plan cap) are not copied, and the free plan has 1 GB of storage in total.
 
 7. **Archive quality cannot be guaranteed.** The Archive does not review uploads, its language field is whatever the uploader typed, and the epubs it makes are produced from page scans by text recognition, so they can contain scanning errors. The vetting in section 5.6 uses only the metadata it is given and has not been checked against live Archive results (archive.org could not be reached from the build environment), so its thresholds are reasoned, not tuned. Gutenberg books are proofread transcriptions and do not have this problem.
-8. **PDF conversion is heuristic.** It was tested on generated PDFs with known text (digital PDFs came out paragraph for paragraph exact) and on a clean generated scan (no word errors), but not on a wide range of real files. Known weak spots: figures on multi-column scans are not found, figures drawn as vector graphics are not found, tables, footnotes and equations come out as ordinary paragraphs, bold and italic are not kept, books with no indents and no spacing between paragraphs can have paragraphs merged, and right-to-left PDFs with a text layer were not tried on real files. Large scans are slow, slower on a phone, and the screen has to stay on.
-9. **Text recognition depends on a public CDN** for its engine files the first time it is used. Offline use afterwards relies on caching that has not been tested in a real browser.
-10. **Housekeeping.** The `/api/gutenberg` and `/api/archive` rewrites are unused. The README still describes an epub.js rendition and does not mention the Internet Archive or importing. Progress percentage accuracy is unverified (section 6.2).
+8. **Google Books downloads are untested against the live service.** The API documents an epub download link for free books, and a separate token link, and it is not known whether the plain link works without signing in. The code handles both outcomes (a refused or sign-in answer leaves the book out of the library with a clear message), but it was only tested with stand-ins for Google. Google may also rate-limit searches made without an API key. Like the Archive, its free books are mostly scans, so quality can vary.
+9. **PDF conversion is heuristic.** It was tested on generated PDFs with known text (digital PDFs came out paragraph for paragraph exact) and on a clean generated scan (no word errors), but not on a wide range of real files. Known weak spots: figures on multi-column scans are not found, figures drawn as vector graphics are not found, tables, footnotes and equations come out as ordinary paragraphs, bold and italic are not kept, books with no indents and no spacing between paragraphs can have paragraphs merged, and right-to-left PDFs with a text layer were not tried on real files. Large scans are slow, slower on a phone, and the screen has to stay on.
+10. **Text recognition depends on a public CDN** for its engine files the first time it is used. Offline use afterwards relies on caching that has not been tested in a real browser.
+11. **Housekeeping.** The `/api/gutenberg` and `/api/archive` rewrites are unused. The README still describes an epub.js rendition and does not mention the Internet Archive or importing. Progress percentage accuracy is unverified (section 6.2).
 
 ---
 
@@ -461,6 +466,7 @@ These come from reading the code. They have not been exploited or load-tested.
 | Reading view, progress and resume | `src/pages/Reader.jsx` |
 | Copying imported books to the account, and fetching them on another device | `src/lib/cloudFiles.js`, the file sync in `src/contexts/LibraryContext.jsx`, `src/pages/Reader.jsx` and `src/pages/BookDetail.jsx` |
 | Importing epub files | `src/lib/importEpub.js` and `src/components/ImportEpubButton.jsx` |
+| Google Books source | `src/lib/googlebooks.js`, and the download-first step in `src/pages/BookDetail.jsx` |
 | PDF import: paragraph rules, chapters | `src/lib/pdf/layout.js` |
 | PDF import: per-page flow, figures, scans | `src/lib/pdf/convert.js`, `render.js`, `ocr.js` |
 | PDF import: the dialog and resuming | `src/components/PdfImportDialog.jsx`, `src/lib/importPdf.js` |

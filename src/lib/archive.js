@@ -60,16 +60,21 @@ function looksForeign(title) {
   return english === 0 && (foreign >= 2 || (foreign >= 1 && words.length >= 4))
 }
 
-// Takes one item as the Archive's search returns it.
-export function isReputable(doc) {
-  const title = String(Array.isArray(doc.title) ? doc.title[0] : doc.title || '').trim()
+// The part of the check that only looks at a title. Shared with other sources.
+export function titleLooksLikeABook(rawTitle) {
+  const title = String(Array.isArray(rawTitle) ? rawTitle[0] : rawTitle || '').trim()
   if (title.length < 3 || title.length > 160) return false
   if (FILE_LIKE.test(title) || NOT_A_BOOK.test(title)) return false
   // a title in another script is another language, whatever the tag says
   for (const ch of title) {
     if (/\p{L}/u.test(ch) && !/\p{Script=Latin}/u.test(ch)) return false
   }
-  if (looksForeign(title)) return false
+  return !looksForeign(title)
+}
+
+// Takes one item as the Archive's search returns it.
+export function isReputable(doc) {
+  if (!titleLooksLikeABook(doc.title)) return false
 
   // an item with no author is usually a pamphlet or someone's scan
   const authors = [].concat(doc.creator || []).map((a) => String(a).trim()).filter(Boolean)

@@ -7,7 +7,11 @@ import { getBookById } from '../lib/gutendex'
 import { hasOfflineFile, saveBookFile } from '../lib/db'
 import { fetchBookContent } from '../lib/gutendex'
 import { getBookById as getArchiveBookById, resolveArchiveEpubUrl } from '../lib/archive'
+import { getBookById as getGoogleBookById } from '../lib/googlebooks'
 import { ArrowLeft, Plus, Check, Download, BookOpen, Loader2 } from 'lucide-react'
+
+// Shown when Google would not hand over a free book's epub.
+const GOOGLE_REFUSED = "Google wouldn't let Folio download this book. Some of Google's free books can only be read on Google's own site."
 
 export default function BookDetail() {
   const { id } = useParams()
@@ -46,6 +50,13 @@ export default function BookDetail() {
         try {
           const sourceId = id.replace('archive-', '')
           const fetched = await getArchiveBookById(sourceId)
+          if (!cancelled) setBook(fetched)
+        } catch (err) {
+          console.error(err)
+        }
+      } else if (id.startsWith('google-')) {
+        try {
+          const fetched = await getGoogleBookById(id.replace('google-', ''))
           if (!cancelled) setBook(fetched)
         } catch (err) {
           console.error(err)
@@ -93,6 +104,29 @@ export default function BookDetail() {
     return () => { cancelled = true }
   }, [book])
 
+  // Google's download links are not guaranteed to work from here (some need a
+  // sign-in and answer with a web page instead of the epub). So a Google
+  // book's file is fetched and checked first. If it is not a real epub, an
+  // epub is a zip file and starts with "PK", the book is not added to the
+  // library and the user is told, rather than ending up with a book that
+  // will not open.
+  async function downloadGoogleBook(b) {
+    if (await hasOfflineFile(b.id)) { setOfflineReady(true); return }
+    setDownloading(true)
+    try {
+      const { blob } = await fetchBookContent(b)
+      const head = new Uint8Array(await blob.slice(0, 2).arrayBuffer())
+      if (head[0] !== 0x50 || head[1] !== 0x4b) throw new Error('not an epub')
+      await saveBookFile(b.id, blob)
+      setOfflineReady(true)
+    } catch (err) {
+      console.error('Google download failed', err)
+      throw new Error('GOOGLE_DOWNLOAD_FAILED', { cause: err })
+    } finally {
+      setDownloading(false)
+    }
+  }
+
   async function handleToggleCollection() {
     if (isInCollection(book.id)) {
       await removeFromCollection(book.id)
@@ -105,6 +139,7 @@ export default function BookDetail() {
     setActionError('')
     try {
       const bookToOpen = await ensureEpub(book)
+      if (bookToOpen.source === 'google') await downloadGoogleBook(bookToOpen)
       if (!isInCollection(bookToOpen.id)) {
         await addToCollection({ ...bookToOpen, addedAt: Date.now() })
       }
@@ -114,7 +149,9 @@ export default function BookDetail() {
       setActionError(
         err.message === 'No epub format available for this book'
           ? "This book has no epub file, so it can't be read in Folio."
-          : 'Could not open this book. Check your connection and try again.'
+          : err.message === 'GOOGLE_DOWNLOAD_FAILED'
+            ? GOOGLE_REFUSED
+            : 'Could not open this book. Check your connection and try again.'
       )
     }
   }
@@ -131,6 +168,11 @@ export default function BookDetail() {
         setOfflineReady(true)
         return
       }
+      if (book.source === 'google') {
+        await downloadGoogleBook(book)
+        if (!isInCollection(book.id)) await addToCollection({ ...book, addedAt: Date.now() })
+        return
+      }
       const bookToFetch = await ensureEpub(book)
       const { blob } = await fetchBookContent(bookToFetch)
       await saveBookFile(bookToFetch.id, blob)
@@ -143,6 +185,8 @@ export default function BookDetail() {
       setActionError(
         err.message === 'No epub format available for this book'
           ? "This book has no epub file, so it can't be downloaded."
+          : err.message === 'GOOGLE_DOWNLOAD_FAILED'
+            ? GOOGLE_REFUSED
           : err.message === 'NOT_IN_ACCOUNT'
             ? "This book isn't in your account yet. Open Folio on the device you imported it on, while online, or import the file here."
             : 'Could not download this book for offline reading.'
@@ -235,7 +279,7 @@ export default function BookDetail() {
           <div className="flex flex-wrap gap-3 mt-6 justify-center sm:justify-start">
             <button
               onClick={handleStartReading}
-              disabled={noEpub}
+              disabled={noEpub || downloading}
               className="flex items-center gap-2 bg-teal-600 text-white text-sm font-medium px-5 py-2.5 rounded-lg hover:bg-teal-500 transition-colors disabled:opacity-50"
             >
               <BookOpen size={16} />
