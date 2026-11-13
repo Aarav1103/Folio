@@ -31,6 +31,59 @@ const ENGLISH_FILTER = '(language:eng OR language:English OR language:en)'
 // that is already in the library, or opened from a link, still opens.
 const PUBLIC_DOMAIN_FILTER = `mediatype:texts AND NOT access-restricted-item:true AND ${ENGLISH_FILTER}`
 
+// ---------------------------------------------------------------------------
+// Vetting
+// ---------------------------------------------------------------------------
+// The Archive does not review what is uploaded. Anyone can add a "book" and
+// type in its title, author and language, so a search for English books still
+// returns other languages, catalogues, magazines, and files named like
+// "IMG_0042". Nothing can be checked against the real book from here, so this
+// rejects items whose own metadata looks wrong, or looks like something other
+// than a book. It is a filter, not a guarantee.
+
+const ENGLISH_LANG = /^(en|eng|english)([-_ ][a-z]+)?$/i
+// Where public uploads and periodicals live, rather than library-scanned books.
+const UPLOAD_COLLECTIONS = /^(opensource|folkscanomy.*|magazine_rack|newspapers|additional_collections|pub_.*)$/i
+const NOT_A_BOOK = /\b(catalogues?|directory|annual report|proceedings|bulletin|magazine|newsletter|yearbook|almanac|gazette|periodical|circular|prospectus|price list|hearings)\b/i
+const FILE_LIKE = /^(?:img|dsc|scan|scanned|file|untitled|document|doc|page|new)[\s_-]*\d*$|\.(?:pdf|djvu|jpe?g|png|txt|docx?)$|^[\d\s._-]+$|(?:_.*){2,}/i
+// Common small words, to spot titles in another language that are tagged English.
+const ENGLISH_STOP = new Set(['the', 'of', 'and', 'to', 'in', 'is', 'by', 'for', 'on', 'with', 'from', 'his', 'her', 'or', 'at', 'as', 'its', 'their', 'into', 'my', 'your', 'our'])
+const FOREIGN_STOP = new Set(['de', 'la', 'le', 'les', 'des', 'du', 'der', 'die', 'das', 'und', 'el', 'del', 'los', 'las', 'il', 'che', 'het', 'een', 'och', 'von', 'par', 'sur', 'pour', 'avec', 'dans', 'em', 'um', 'uma', 'ein', 'eine', 'mit', 'nach', 'zu'])
+
+// Items with very few downloads are mostly things nobody wanted.
+export const MIN_DOWNLOADS = 100
+
+function looksForeign(title) {
+  const words = title.toLowerCase().split(/[^\p{L}']+/u).filter(Boolean)
+  const english = words.filter((w) => ENGLISH_STOP.has(w)).length
+  const foreign = words.filter((w) => FOREIGN_STOP.has(w)).length
+  return english === 0 && (foreign >= 2 || (foreign >= 1 && words.length >= 4))
+}
+
+// Takes one item as the Archive's search returns it.
+export function isReputable(doc) {
+  const title = String(Array.isArray(doc.title) ? doc.title[0] : doc.title || '').trim()
+  if (title.length < 3 || title.length > 160) return false
+  if (FILE_LIKE.test(title) || NOT_A_BOOK.test(title)) return false
+  // a title in another script is another language, whatever the tag says
+  for (const ch of title) {
+    if (/\p{L}/u.test(ch) && !/\p{Script=Latin}/u.test(ch)) return false
+  }
+  if (looksForeign(title)) return false
+
+  // an item with no author is usually a pamphlet or someone's scan
+  const authors = [].concat(doc.creator || []).map((a) => String(a).trim()).filter(Boolean)
+  if (authors.length === 0) return false
+
+  // every language listed must be English, a bilingual item is rarely an English book
+  const languages = [].concat(doc.language || []).flatMap((l) => String(l).split(/[;,/]+/)).map((l) => l.trim()).filter(Boolean)
+  if (languages.length === 0 || !languages.every((l) => ENGLISH_LANG.test(l))) return false
+
+  if ([].concat(doc.collection || []).some((c) => UPLOAD_COLLECTIONS.test(String(c)))) return false
+  if (Number(doc.downloads || 0) < MIN_DOWNLOADS) return false
+  return true
+}
+
 function mapItem(doc) {
   const identifier = doc.identifier
   return {
@@ -59,7 +112,10 @@ function mapItem(doc) {
 // lazily, only for a book the user actually opens (see
 // resolveArchiveEpubUrl below). Some results may turn out to have no
 // epub, the book page reports that as soon as it opens.
-async function searchRaw(query, { page = 1, rows = 20, sort = '' } = {}) {
+// `vet` is on for search, topics and the popular list, and off for looking up
+// one known book by identifier. Each page is large because vetting drops
+// some of it.
+async function searchRaw(query, { page = 1, rows = 50, sort = '', vet = true } = {}) {
   const url = new URL(`${ARCHIVE_ORIGIN}/advancedsearch.php`)
   url.searchParams.set('q', query)
   url.searchParams.set('fl[]', 'identifier')
@@ -68,6 +124,7 @@ async function searchRaw(query, { page = 1, rows = 20, sort = '' } = {}) {
   url.searchParams.append('fl[]', 'subject')
   url.searchParams.append('fl[]', 'language')
   url.searchParams.append('fl[]', 'downloads')
+  url.searchParams.append('fl[]', 'collection')
   url.searchParams.set('rows', rows)
   url.searchParams.set('page', page)
   url.searchParams.set('output', 'json')
@@ -82,7 +139,7 @@ async function searchRaw(query, { page = 1, rows = 20, sort = '' } = {}) {
   return {
     count,
     next: page * rows < count,
-    results: docs.map(mapItem),
+    results: (vet ? docs.filter(isReputable) : docs).map(mapItem),
   }
 }
 
@@ -100,7 +157,7 @@ export async function getPopularBooks(opts = {}) {
 }
 
 export async function getBookById(identifier) {
-  const results = await searchRaw(`identifier:${identifier}`, { rows: 1 })
+  const results = await searchRaw(`identifier:${identifier}`, { rows: 1, vet: false })
   if (!results.results.length) throw new Error('Book not found')
   return results.results[0]
 }
