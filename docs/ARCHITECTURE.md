@@ -255,9 +255,10 @@ Display options (theme, text size, left/right hand) are local to the page. Only 
 ### 5.6 Discover
 
 - The current search or topic lives in the URL (`?q=` or `?topic=`), so refresh, links and back work.
-- Gutendex and the Internet Archive are queried in parallel. Each source's results appear as soon as that source answers (Gutendex results are listed first, and a spinner shows while the Archive is pending). A failed source simply contributes nothing.
+- Gutendex is always searched. The Internet Archive is searched only if the user ticks "Also search the Internet Archive" under the topics (off by default, remembered in `localStorage` under `folio-include-archive`), because its books are scans uploaded by libraries and the public and are not checked for quality. When both are on they are queried in parallel, each source's results appear as soon as that source answers (Gutendex results are listed first, and a spinner shows while the Archive is pending), and a failed source simply contributes nothing.
 - Each fetch gets a request id, and responses from an older search are dropped.
 - Archive results are not checked for an epub at search time. The check happens when a book page opens (`BookDetail`) or the book is read.
+- Archive results are vetted on the client, from each item's own metadata (`isReputable` in `src/lib/archive.js`): every listed language must be English, the title must be in Latin script, must not read as another language, a file name, a catalogue, report or magazine, the item must have an author, must not be in a public-upload or periodical collection, and must have at least 100 downloads. This is a filter and not a guarantee, since the Archive does not review uploads and the language, title and author are typed in by whoever uploaded the item. Looking up one known book by id (opening a book already in the library) is not vetted.
 
 ### 5.7 Styling
 
@@ -442,9 +443,10 @@ These come from reading the code. They have not been exploited or load-tested.
 
 6. **Imported books need the storage setup to follow you.** Without `supabase-storage.sql` they stay on the device that imported them. With it, files over 50 MB (the free-plan cap) are not copied, and the free plan has 1 GB of storage in total.
 
-7. **PDF conversion is heuristic.** It was tested on generated PDFs with known text (digital PDFs came out paragraph for paragraph exact) and on a clean generated scan (no word errors), but not on a wide range of real files. Known weak spots: figures on multi-column scans are not found, figures drawn as vector graphics are not found, tables, footnotes and equations come out as ordinary paragraphs, bold and italic are not kept, books with no indents and no spacing between paragraphs can have paragraphs merged, and right-to-left PDFs with a text layer were not tried on real files. Large scans are slow, slower on a phone, and the screen has to stay on.
-8. **Text recognition depends on a public CDN** for its engine files the first time it is used. Offline use afterwards relies on caching that has not been tested in a real browser.
-9. **Housekeeping.** The `/api/gutenberg` and `/api/archive` rewrites are unused. The README still describes an epub.js rendition and does not mention the Internet Archive or importing. Progress percentage accuracy is unverified (section 6.2).
+7. **Archive quality cannot be guaranteed.** The Archive does not review uploads, its language field is whatever the uploader typed, and the epubs it makes are produced from page scans by text recognition, so they can contain scanning errors. The vetting in section 5.6 uses only the metadata it is given and has not been checked against live Archive results (archive.org could not be reached from the build environment), so its thresholds are reasoned, not tuned. Gutenberg books are proofread transcriptions and do not have this problem.
+8. **PDF conversion is heuristic.** It was tested on generated PDFs with known text (digital PDFs came out paragraph for paragraph exact) and on a clean generated scan (no word errors), but not on a wide range of real files. Known weak spots: figures on multi-column scans are not found, figures drawn as vector graphics are not found, tables, footnotes and equations come out as ordinary paragraphs, bold and italic are not kept, books with no indents and no spacing between paragraphs can have paragraphs merged, and right-to-left PDFs with a text layer were not tried on real files. Large scans are slow, slower on a phone, and the screen has to stay on.
+9. **Text recognition depends on a public CDN** for its engine files the first time it is used. Offline use afterwards relies on caching that has not been tested in a real browser.
+10. **Housekeeping.** The `/api/gutenberg` and `/api/archive` rewrites are unused. The README still describes an epub.js rendition and does not mention the Internet Archive or importing. Progress percentage accuracy is unverified (section 6.2).
 
 ---
 

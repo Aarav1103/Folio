@@ -5,6 +5,10 @@ import * as archive from '../lib/archive'
 import BookCard from '../components/BookCard'
 import { Search, Loader2 } from 'lucide-react'
 
+// The Internet Archive is only searched when this is turned on. Its books are
+// scans uploaded by libraries and the public, and are not checked for quality.
+const ARCHIVE_KEY = 'folio-include-archive'
+
 export default function Discover() {
   // The current search/topic lives in the URL (?q=... or ?topic=...),
   // not just component state, so refreshing, sharing a link, or using
@@ -27,6 +31,9 @@ export default function Discover() {
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState('')
+  const [includeArchive, setIncludeArchive] = useState(() => localStorage.getItem(ARCHIVE_KEY) === 'true')
+  // the fetch code below reads the latest choice from here
+  const archiveOnRef = useRef(includeArchive)
 
   const results = [...gutResults, ...archResults]
   const hasMore = gutHasMore || archHasMore
@@ -58,6 +65,7 @@ export default function Discover() {
     setError('')
 
     const { gutendexFn, archiveFn } = makeFetchers(targetPage)
+    const noArchive = skipArchive || !archiveOnRef.current
 
     // Wraps one source: applies its results the moment they arrive.
     // Resolves true on success, false if that source failed (a failed
@@ -77,10 +85,10 @@ export default function Discover() {
         }
       )
 
-    if (!skipArchive) setArchiveLoading(true)
+    if (!noArchive) setArchiveLoading(true)
     const tasks = [
       skipGutendex ? Promise.resolve(false) : track(gutendexFn, setGutResults, setGutHasMore),
-      skipArchive
+      noArchive
         ? Promise.resolve(false)
         : track(archiveFn, setArchResults, setArchHasMore).finally(() => {
             if (isCurrent()) setArchiveLoading(false)
@@ -134,7 +142,7 @@ export default function Discover() {
       loadPopular()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlQuery, urlTopic])
+  }, [urlQuery, urlTopic, includeArchive])
 
   function handleSearch(e) {
     e.preventDefault()
@@ -143,6 +151,12 @@ export default function Discover() {
       return
     }
     setSearchParams({ q: query })
+  }
+
+  function handleArchiveToggle(on) {
+    localStorage.setItem(ARCHIVE_KEY, String(on))
+    archiveOnRef.current = on // before the state change re-runs the search
+    setIncludeArchive(on)
   }
 
   function handleTopic(topic) {
@@ -190,6 +204,21 @@ export default function Discover() {
           </button>
         ))}
       </div>
+
+      <label className="flex items-start gap-2.5 text-xs text-ink-muted -mt-4 mb-8 max-w-xl cursor-pointer">
+        <input
+          type="checkbox"
+          checked={includeArchive}
+          onChange={(e) => handleArchiveToggle(e.target.checked)}
+          className="mt-0.5 accent-teal-600"
+        />
+        <span>
+          <span className="font-medium text-ink">Also search the Internet Archive</span>
+          <br />
+          Scans uploaded by libraries and the public. They are not checked for quality, so some look rough or have
+          scanning errors. Only English books that pass a basic check are shown.
+        </span>
+      </label>
 
       {loading ? (
         <div className="flex items-center justify-center py-20 text-ink-muted gap-2">
