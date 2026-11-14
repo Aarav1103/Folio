@@ -5,6 +5,14 @@ import ImportEpubButton from '../components/ImportEpubButton'
 import { sortByRecency } from '../lib/recency'
 import { useNavigate } from 'react-router-dom'
 
+// Widths in the Currently reading row, worked out from the collection grid below it
+// (3, 4 or 5 columns across with a 1.25rem gap), so the cards line up with it.
+// The book read most recently comes first and is drawn a little larger (1.4 columns
+// wide), like a "pick up where you left off" card. The row scrolls sideways, and the
+// next card peeking in at the edge shows that it does.
+const CARD_WIDTH = 'w-[calc((100%-2.5rem)/3)] sm:w-[calc((100%-3.75rem)/4)] md:w-[calc((100%-5rem)/5)]'
+const LEAD_CARD_WIDTH = 'w-[calc((100%-2.5rem)/3*1.4)] sm:w-[calc((100%-3.75rem)/4*1.4)] md:w-[calc((100%-5rem)/5*1.4)]'
+
 export default function Home() {
   const { collection, progressMap, isOnline, syncing } = useLibrary()
   const navigate = useNavigate()
@@ -35,13 +43,8 @@ export default function Home() {
             Currently reading
           </h2>
           <div className="flex gap-5 overflow-x-auto no-scrollbar pb-2">
-            {currentlyReading.map((book) => (
-              // Each card is as wide as a column of the collection grid below
-              // (3, 4 or 5 across, with the same gap), and never squeezed.
-              <div
-                key={book.id}
-                className="flex-shrink-0 w-[calc((100%-2.5rem)/3)] sm:w-[calc((100%-3.75rem)/4)] md:w-[calc((100%-5rem)/5)]"
-              >
+            {currentlyReading.map((book, i) => (
+              <div key={book.id} className={`flex-shrink-0 ${i === 0 ? LEAD_CARD_WIDTH : CARD_WIDTH}`}>
                 <BookCard
                   book={book}
                   progress={progressMap[book.id]?.percentage}
