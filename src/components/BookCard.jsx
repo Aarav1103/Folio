@@ -13,7 +13,10 @@ const dims = {
   return (
     <button
       onClick={() => navigate(`/book/${book.id}`)}
-      className={`group text-left focus:outline-none ${size === 'grid' ? 'min-w-0' : 'flex-shrink-0'}`}
+      // 'grid' cards fill whatever box they are put in (a grid column, or a fixed-width
+      // wrapper in a scrolling row). w-full matters outside a grid: without it the card
+      // is only as wide as its cover image's own pixel size and the title.
+      className={`group text-left focus:outline-none ${size === 'grid' ? 'min-w-0 w-full' : 'flex-shrink-0'}`}
     >
       
       <div className={`${dims} relative rounded-sm overflow-hidden shadow-md bg-ink/5 transition-transform duration-200 group-hover:-translate-y-1 group-hover:shadow-xl`}>
