@@ -189,7 +189,7 @@ src/
   pages/
     Landing.jsx           Public marketing page (signed-out root)
     Login.jsx             Sign in / create account / Google
-    Home.jsx              "Your shelf": currently reading + collection (most recent first)
+    Home.jsx              "Your shelf": currently reading (the most recently read book drawn larger) + collection (most recent first)
     Discover.jsx          Search, topics, merged results from both sources
     Collection.jsx        Library, most recently added or read first, with local search and import button
     BookDetail.jsx        One book: add, read, download for offline
