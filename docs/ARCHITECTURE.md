@@ -181,7 +181,7 @@ src/
     LibraryContext.jsx    Collection, progress, online state, all sync logic
   components/
     NavShell.jsx          Desktop sidebar and mobile bottom nav
-    BookCard.jsx          Cover tile used in every grid
+    BookCard.jsx          Cover tile; size="grid" fills its box (a grid column, or the fixed-width wrapper in Home's Currently reading row)
     ImportEpubButton.jsx  File picker for .epub and .pdf, results, resume of stopped scans
     WidthIcon.jsx         The pictures on the reader's text width buttons
     UpdatePrompt.jsx      "New version ready" banner and the periodic check for updates

@@ -36,12 +36,18 @@ export default function Home() {
           </h2>
           <div className="flex gap-5 overflow-x-auto no-scrollbar pb-2">
             {currentlyReading.map((book) => (
-              <BookCard
+              // Each card is as wide as a column of the collection grid below
+              // (3, 4 or 5 across, with the same gap), and never squeezed.
+              <div
                 key={book.id}
-                book={book}
-                progress={progressMap[book.id]?.percentage}
-                size="grid"
-              />
+                className="flex-shrink-0 w-[calc((100%-2.5rem)/3)] sm:w-[calc((100%-3.75rem)/4)] md:w-[calc((100%-5rem)/5)]"
+              >
+                <BookCard
+                  book={book}
+                  progress={progressMap[book.id]?.percentage}
+                  size="grid"
+                />
+              </div>
             ))}
           </div>
         </section>
