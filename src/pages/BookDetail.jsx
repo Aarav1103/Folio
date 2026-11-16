@@ -16,7 +16,7 @@ const GOOGLE_REFUSED = "Google wouldn't let Folio download this book. Some of Go
 export default function BookDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { collection, addToCollection, removeFromCollection, isInCollection, getProgress, cloudFiles, isOnline } = useLibrary()
+  const { collection, addToCollection, removeFromCollection, isInCollection, getProgress, refreshBookProgress, cloudFiles, isOnline } = useLibrary()
   const { user } = useAuth()
 
   const [book, setBook] = useState(null)
@@ -196,6 +196,14 @@ export default function BookDetail() {
     }
   }
   const progress = book ? getProgress(book.id) : null
+
+  // Another device may have read further since this one last synced: ask the
+  // account for this book's position when its page opens, so "Continue reading"
+  // and the percentage are up to date.
+  const bookId = book?.id
+  useEffect(() => {
+    if (bookId) refreshBookProgress(bookId)
+  }, [bookId, refreshBookProgress])
 
   if (loading) {
     return (
