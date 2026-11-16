@@ -177,7 +177,7 @@ function readAnchor(container) {
 export default function Reader() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { saveProgress, getProgress, collection } = useLibrary()
+  const { saveProgress, getProgress, refreshBookProgress, collection } = useLibrary()
   const { user } = useAuth()
 
   const containerRef = useRef(null)
@@ -280,7 +280,15 @@ export default function Reader() {
         // this page was opened directly (a refresh, a link) before the
         // library finished loading. Local storage is where progress is
         // always written first, so fall back to reading it from there.
-        const existingProgress = getProgress(id) || (await getProgressLocal(id))
+        // Another device may have read further since this one last synced, so the
+        // account is asked for the newest position first. It is not waited on for
+        // long: on a slow or missing connection the book opens from what this
+        // device has.
+        const newest = await Promise.race([
+          refreshBookProgress(id),
+          new Promise((resolve) => setTimeout(() => resolve(undefined), 2500)),
+        ])
+        const existingProgress = newest || getProgress(id) || (await getProgressLocal(id))
         let savedIndex = 0
         let savedFraction = 0 // how far into that chapter, 0 to 1
         let savedPercentage = 0
@@ -431,14 +439,16 @@ export default function Reader() {
   // Mobile's dynamic address bar (it shows/hides mid-scroll) and
   // momentum scrolling can make a single scroll-event check unreliable
   // right at the bottom edge, so touchend is a backup trigger too.
-  useEffect(() => {
+  // The effect below is a layout effect on purpose: its cleanup then runs while
+  // the page is still on screen (before React removes it), so on leaving the book
+  // the spot can still be measured and saved.
+  useLayoutEffect(() => {
     const el = containerRef.current
-    if (!el) return
+    if (!el) return undefined
 
-    function checkAndUpdate() {
-      const remaining = el.scrollHeight - el.scrollTop - el.clientHeight
-      if (remaining < el.clientHeight * 1.5) loadNextSection()
-
+    // Work out which chapter is at the top of the screen and how far into it, and
+    // save that as the reading position.
+    function saveCurrentSpot() {
       // Find which chapter is actually in view right now, not just the
       // most recently loaded one, otherwise scrolling back up to reread
       // something earlier would still report your furthest point.
@@ -459,18 +469,43 @@ export default function Reader() {
       })
     }
 
+    function checkAndUpdate() {
+      const remaining = el.scrollHeight - el.scrollTop - el.clientHeight
+      if (remaining < el.clientHeight * 1.5) loadNextSection()
+      saveCurrentSpot()
+    }
+
     let debounce
+    let unsaved = false // scrolled since the last save
     function handleScroll() {
+      unsaved = true
       clearTimeout(debounce)
-      debounce = setTimeout(checkAndUpdate, 150)
+      debounce = setTimeout(() => { unsaved = false; checkAndUpdate() }, 150)
+    }
+
+    // Saves the spot at once if a scroll is still waiting for its delayed save. Used
+    // when the page is about to go away: hidden (switching apps, locking the phone),
+    // closed, or the book left. Without it the last moments of reading are lost.
+    function saveNow() {
+      clearTimeout(debounce)
+      if (!unsaved) return
+      unsaved = false
+      saveCurrentSpot()
+    }
+    function handleVisibility() {
+      if (document.visibilityState === 'hidden') saveNow()
     }
 
     el.addEventListener('scroll', handleScroll, { passive: true })
     el.addEventListener('touchend', checkAndUpdate)
+    document.addEventListener('visibilitychange', handleVisibility)
+    window.addEventListener('pagehide', saveNow)
     return () => {
-      clearTimeout(debounce)
+      saveNow()
       el.removeEventListener('scroll', handleScroll)
       el.removeEventListener('touchend', checkAndUpdate)
+      document.removeEventListener('visibilitychange', handleVisibility)
+      window.removeEventListener('pagehide', saveNow)
     }
   }, [sections, loadNextSection, id, saveProgress])
 

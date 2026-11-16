@@ -83,9 +83,14 @@ export async function deleteBookFile(bookId) {
 }
 
 // --- Reading progress (local-first, synced to Supabase when online) ---
+// The progress keeps the time it was saved with. A position that came from the
+// account must keep the time it was saved there (not "now", which would make it
+// look newer than later saves made on a device whose clock is behind this one).
+// Only a progress with no time of its own is stamped with the current time.
 export async function saveProgressLocal(bookId, progress) {
   const db = await getDB()
-  return db.put('progress', { bookId, ...progress, updatedAt: Date.now() })
+  const updatedAt = Number.isFinite(progress.updatedAt) ? progress.updatedAt : Date.now()
+  return db.put('progress', { bookId, ...progress, updatedAt })
 }
 
 export async function getProgressLocal(bookId) {
@@ -102,6 +107,34 @@ export async function getAllProgressLocal() {
 export async function queuePendingSync(entry) {
   const db = await getDB()
   return db.add('pendingSync', entry)
+}
+
+// Progress is queued at most once per book: only the newest position matters, so
+// it replaces an older queued one (while offline there would otherwise be one
+// entry for every pause in scrolling).
+export async function queueProgressSync(entry) {
+  const db = await getDB()
+  const tx = db.transaction('pendingSync', 'readwrite')
+  const store = tx.objectStore('pendingSync')
+  for (const queued of await store.getAll()) {
+    if (queued.type === 'progress' && queued.bookId === entry.bookId) await store.delete(queued.id)
+  }
+  await store.add(entry)
+  await tx.done
+}
+
+// A position was sent successfully, so queued positions of that book that are
+// not newer are out of date and must not be sent later over it.
+export async function dropPendingProgress(bookId, upToTime) {
+  const db = await getDB()
+  const tx = db.transaction('pendingSync', 'readwrite')
+  const store = tx.objectStore('pendingSync')
+  for (const queued of await store.getAll()) {
+    if (queued.type === 'progress' && queued.bookId === bookId && (queued.updatedAt || 0) <= upToTime) {
+      await store.delete(queued.id)
+    }
+  }
+  await tx.done
 }
 
 export async function getPendingSync() {

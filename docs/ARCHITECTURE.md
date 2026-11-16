@@ -70,7 +70,7 @@ Three things to keep in mind:
 | Epub file of an imported book (an epub, or a converted PDF) | IndexedDB, store `files`, **and** a copy in Supabase Storage, bucket `books` | Yes, other devices download it the first time they open the book |
 | Book metadata (title, author, cover, source ids) | IndexedDB `books` **and** Supabase `collection_items` | Yes |
 | Reading progress | IndexedDB `progress` **and** Supabase `reading_progress` | Yes |
-| Changes made offline | IndexedDB `pendingSync` (a queue) | No, flushed when back online |
+| Changes made offline, or that failed to send | IndexedDB `pendingSync` (a queue, one progress entry per book) | No, sent at the next start, return to the app, poll or reconnect |
 | A scanned PDF being converted (the PDF and each recognised page) | IndexedDB `pdfJobs` and `ocrPages`, until the book is made | No, per device |
 | Sign-in session | `localStorage`, managed by the Supabase client | n/a |
 | Reading hand (left/right) | `localStorage` key `folio-handedness` | No, per device |
@@ -162,6 +162,7 @@ src/
   lib/
     supabase.js           Supabase client (reads VITE_ env vars)
     db.js                 IndexedDB wrapper (books, files, progress, pendingSync)
+    progressMerge.js      Rules for combining progress from two devices and for stamping a new save later than the one it replaces
     gutendex.js           Gutendex client, book mapping, fetchBookContent()
     archive.js            Internet Archive client, lazy epub lookup, vetting of results
     googlebooks.js        Google Books client (free epubs only), vetting of results
@@ -369,7 +370,7 @@ Note that the percentage counts every chapter equally, whatever its length or wh
 `BookDetail` -> `fetchBookContent` -> `/api/fetch-book?url=...` -> blob -> IndexedDB `files`, and the book is added to the library if it was not already.
 
 **Read**
-`Reader` -> epub blob (IndexedDB, or download then store) -> parse and render (section 5.5) -> `saveProgress` on scroll.
+`Reader` -> epub blob (IndexedDB, or download then store) -> parse and render (section 5.5) -> `saveProgress` after scrolling stops, and straight away when the page is hidden or the book is left.
 
 **Import an epub**
 `ImportEpubButton` -> `importEpub.js`:
@@ -397,7 +398,7 @@ The id depends only on the file contents, so importing the same file on another 
 4. Build an epub, then run it through `importEpubFile` (above) with the id taken from the PDF's bytes. Delete the saved job.
 
 **Resume reading**
-`Reader` reads progress from the library state, falling back to IndexedDB, then restores position as described in section 5.5.
+`Reader` first asks the account for this book's newest position (`refreshBookProgress`, waiting at most 2.5 seconds), so a position saved on another device is used even if this device has not synced yet. It uses that, else the library state, else IndexedDB, then restores the position as described in section 5.5. `BookDetail` asks the same when its page opens, so "Continue reading" and the percentage are current.
 
 ---
 
@@ -406,17 +407,24 @@ The id depends only on the file contents, so importing the same file on another 
 All of this is in `LibraryContext.jsx`.
 
 **When it runs**
-- On load, and whenever the signed-in user changes: read IndexedDB into state immediately (fast, works offline), then, if online and signed in, `reconcileWithRemote`.
-- When the tab becomes visible or the window regains focus: reconcile again, at most once every 15 seconds.
-- When the connection returns: flush the `pendingSync` queue.
+- On load, and whenever the signed-in user changes: read IndexedDB into state immediately (fast, works offline), then, if online and signed in, send the queued changes (in the background) and run `reconcileWithRemote`. Copying imported files to the account (`syncCloudFiles`) is started afterwards and nothing waits for it: uploads can take minutes on a slow connection.
+- **Progress is refreshed on its own** (`pullProgress`, one small query that does not touch the book list or any file): every 20 seconds while the app is in view, and straight away when the app comes back into view or the window gets focus (at most once every 2 seconds). Queued changes are sent at the same moments.
+- When the app comes back into view, the whole library (the list of books too) is also refreshed, at most once every 15 seconds.
+- When the connection returns or the user signs in: send queued changes and refresh progress now.
+- Opening a book (or its page) asks the account for that one book's position first (`refreshBookProgress`).
+- Each of these runs one at a time (`singleFlight`) and gives up waiting after 30 seconds (and each request after 20), so one stuck request cannot stop later syncs.
 
 **Merge rules**
-- **Collection:** the union of local and remote. Remote wins on metadata for a book that exists in both. A local book that is missing from the remote list is treated as removed on another device and is deleted locally (including its stored file), unless a pending `add_book` is protecting it.
-- **Progress:** last write wins, comparing `updated_at` from Supabase with the local `updatedAt`.
+- **Collection:** the union of local and remote. Remote wins on metadata for a book that exists in both. A local book that is missing from the remote list is treated as removed on another device and is deleted locally (including its stored file), unless a pending add for it is still queued.
+- **Progress:** last write wins, comparing each position's saved time (`src/lib/progressMerge.js`). Clocks on different devices differ (minutes is normal), so two rules keep the order right: a position taken from the account **keeps the time it was saved with** (`saveProgressLocal` no longer re-stamps it with this device's clock), and a **new save is always stamped later than the position it replaces** (`nextSaveTime`), even if this device's clock is behind. Before these, a device refused another device's newer progress for as long as the clocks differed. If two devices save without having seen each other's position, the later time still wins.
+
+**Sending progress** (`sendProgress`): a save is written to IndexedDB first, then sent to the account. Only the newest position of a book is sent if saves arrive faster than requests complete, so saves reach the account in order. The request is sent with `keepalive` (`src/lib/supabase.js`) so the browser finishes it even if the page is hidden or closed a moment later. A save that fails is queued, **one entry per book** (`queueProgressSync`), and a queued position is dropped when a newer one is sent successfully.
+
+**Errors:** the Supabase client returns a failed request as an `{error}` value instead of throwing it. Every write is checked for it (`raise`); before this, a failed progress save, "add book" or queued entry looked like it had worked and was never retried. A failed "add book" could also make the book disappear at the next refresh, because a local book the account does not have is treated as removed elsewhere.
 
 **Imported files** follow the same local-first idea: the file is saved on the device first, then copied to the account when possible (see the flow in section 7). They are not merged or compared, a stored copy is simply replaced when the same book is added again.
 
-**Flushing:** each queued entry is replayed (upserts for adds and progress, a delete for removals, an upload for `upload_file`). An entry that fails stays queued and is retried next time.
+**Flushing:** each queued entry is replayed (upserts for adds and progress, a delete for removals, an upload for `upload_file`). An entry is removed only once the account has accepted it; one that fails stays queued and is retried at the next start, return to the app, poll or reconnect.
 
 ---
 
@@ -476,6 +484,7 @@ These come from reading the code. They have not been exploited or load-tested.
 | What is stored in Supabase | `supabase-schema.sql`, plus the two `collection_items` upserts (adding a book and flushing the queue) and the reconcile mapping in `LibraryContext.jsx` |
 | Reading view, progress and resume | `src/pages/Reader.jsx` |
 | Copying imported books to the account, and fetching them on another device | `src/lib/cloudFiles.js`, the file sync in `src/contexts/LibraryContext.jsx`, `src/pages/Reader.jsx` and `src/pages/BookDetail.jsx` |
+| How and when progress and the library sync between devices (polling, queue, merge rules) | `src/contexts/LibraryContext.jsx`, `src/lib/progressMerge.js`, the queue helpers in `src/lib/db.js`, `keepalive` in `src/lib/supabase.js`, the save-on-leaving logic in `src/pages/Reader.jsx` |
 | Library and shelf ordering (most recently added or read first) | `src/lib/recency.js`, used by `Collection.jsx` and `Home.jsx` |
 | Update banner, build stamp | `src/components/UpdatePrompt.jsx`, `registerType` and `define` in `vite.config.js`, `Account.jsx` |
 | Importing epub files | `src/lib/importEpub.js` and `src/components/ImportEpubButton.jsx` |
