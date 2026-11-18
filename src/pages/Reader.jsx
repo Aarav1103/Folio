@@ -52,6 +52,34 @@ async function loadSectionDocument(book, url) {
   return new DOMParser().parseFromString(source, 'text/html')
 }
 
+function safeDecode(text) {
+  try { return decodeURIComponent(text) } catch { return text }
+}
+
+// The position in the reading order of the chapter file at `path` (written the
+// way the book's own files are, relative to the package), or -1 if that file is
+// not a chapter (a stylesheet, a contents file that is not part of the reading order).
+function spineIndexForPath(book, path) {
+  const want = path.replace(/^\/+/, '')
+  return book.spine.spineItems.findIndex((item) => safeDecode(String(item.href || '')).replace(/^\/+/, '') === want)
+}
+
+// Puts the reader at a spot (by running `place`) and keeps it there while images
+// above it finish loading, until the reader scrolls themselves or three seconds
+// pass: the same thing the restore does when a book opens.
+function holdPosition(el, place) {
+  place()
+  const takeover = ['wheel', 'touchstart', 'mousedown', 'keydown']
+  const timer = setTimeout(stop, 3000)
+  function stop() {
+    clearTimeout(timer)
+    el.removeEventListener('load', place, true)
+    takeover.forEach((ev) => window.removeEventListener(ev, stop))
+  }
+  el.addEventListener('load', place, true) // load does not bubble, so capture it
+  takeover.forEach((ev) => window.addEventListener(ev, stop, { passive: true }))
+}
+
 // Pulls a chapter's content out of epub.js as a plain HTML string, with
 // no iframe involved at all. epub.js's render() return shape has varied
 // across versions (sometimes a full document, sometimes just a body
@@ -83,6 +111,37 @@ async function extractSectionHtml(book, section) {
       // image than a crash.
     }
   }))
+
+  // Links. Left as written, a link to another chapter ("chapter3.xhtml") is resolved
+  // by the browser against the reader's own address (/read/<book>), which leaves the
+  // book and shows "Book not found". Each one is pointed at its chapter here, while
+  // the book's own file paths are known, and the reader scrolls there when it is
+  // tapped (see jumpTo and handleContentClick).
+  for (const a of root.querySelectorAll('a[href]')) {
+    const href = (a.getAttribute('href') || '').trim()
+    if (/^(javascript|vbscript|data):/i.test(href)) { a.removeAttribute('href'); continue }
+    if (/^https?:/i.test(href)) { a.setAttribute('target', '_blank'); a.setAttribute('rel', 'noopener noreferrer'); continue }
+    if (/^[a-z][a-z0-9+.-]*:/i.test(href)) continue // mailto:, tel: and the like are left to the browser
+    if (href.startsWith('#')) {
+      // a place in this same chapter (a note, a back-link from a note)
+      a.setAttribute('data-folio-anchor', safeDecode(href.slice(1)))
+      a.setAttribute('href', '#')
+      continue
+    }
+    let target
+    try {
+      const url = new URL(href, 'https://book.invalid/' + section.href)
+      target = { path: safeDecode(url.pathname.slice(1)), anchor: safeDecode(url.hash.slice(1)) }
+    } catch {
+      a.removeAttribute('href')
+      continue
+    }
+    const index = spineIndexForPath(book, target.path)
+    if (index < 0) { a.removeAttribute('href'); continue } // points at something that is not a chapter
+    a.setAttribute('data-folio-chapter', String(index))
+    if (target.anchor) a.setAttribute('data-folio-anchor', target.anchor)
+    a.setAttribute('href', '#')
+  }
 
   let html = parsed.body ? parsed.body.innerHTML : raw
   // Defense in depth, script tags inserted via innerHTML never execute
@@ -188,6 +247,7 @@ export default function Reader() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [controlsVisible, setControlsVisible] = useState(false)
+  const [jumping, setJumping] = useState(false) // loading chapters to follow a link
   const [settingsOpen, setSettingsOpen] = useState(false)
   // Theme, text size and reading hand are remembered on this device (src/lib/readerPrefs.js)
   const [theme, setTheme] = useState(() => loadTheme(Object.keys(THEMES)))
@@ -432,6 +492,97 @@ export default function Reader() {
       loadNextSection(nextIndex + 1, attemptsLeft - 1)
     }
   }, [sections])
+
+  // Scrolls to a chapter, and to a place inside it if the link names one. Chapters
+  // are kept in reading order and loaded as you read, so a chapter ahead of the last
+  // one loaded means loading the ones in between first.
+  const sectionsRef = useRef([])
+  useEffect(() => { sectionsRef.current = sections }, [sections])
+  const jumpTo = useCallback(async (index, anchor) => {
+    const el = containerRef.current
+    const book = bookRef.current
+    if (!el || !book) return
+    setControlsVisible(false)
+    setSettingsOpen(false)
+    // a chapter that is being loaded as you scroll must finish first, so the two do not both add it
+    for (let i = 0; i < 60 && loadingNextRef.current; i++) await new Promise((r) => setTimeout(r, 50))
+
+    const loaded = sectionsRef.current
+    const last = loaded.length ? loaded[loaded.length - 1].index : -1
+    if (index > last) {
+      loadingNextRef.current = true
+      setJumping(true)
+      try {
+        const added = []
+        for (let i = last + 1; i <= index && i < sectionCountRef.current; i++) {
+          try {
+            const html = await extractSectionHtml(book, book.spine.get(i))
+            const hasText = html.replace(/<[^>]*>/g, '').trim().length > 0
+            const hasImage = /<img[^>]+src=["']blob:/i.test(html) || /<image[^>]+(?:xlink:)?href=["']blob:/i.test(html)
+            if (html && (hasText || hasImage)) added.push({ index: i, html })
+          } catch (err) {
+            console.error(`Failed to load chapter ${i} while following a link, skipping`, err) // like reading on: one bad chapter does not stop the rest
+          }
+        }
+        if (added.length) {
+          setSections((prev) => {
+            const seen = new Set(prev.map((s) => s.index))
+            return [...prev, ...added.filter((s) => !seen.has(s.index))]
+          })
+        }
+        // wait until the chapters are on the page
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+        for (let i = 0; i < 20 && added.length && !el.querySelector(`[data-section-index="${added[added.length - 1].index}"]`); i++) {
+          await new Promise((r) => setTimeout(r, 50))
+        }
+      } finally {
+        loadingNextRef.current = false
+        setJumping(false)
+      }
+    }
+
+    const place = () => {
+      let chapter = el.querySelector(`[data-section-index="${index}"]`)
+      if (!chapter) {
+        // that chapter could not be loaded: go to the nearest one before it
+        chapter = [...el.querySelectorAll('[data-section-index]')].reverse().find((c) => Number(c.dataset.sectionIndex) < index) || el.querySelector('[data-section-index]')
+      }
+      if (!chapter) return
+      let target = chapter
+      if (anchor) {
+        const found = chapter.querySelector(`[id="${CSS.escape(anchor)}"]`) || chapter.querySelector(`a[name="${CSS.escape(anchor)}"]`)
+        // A contents link often points at a marker right at the start of the chapter: that is
+        // the chapter start, so the reading position records the chapter and not the end of the one before.
+        if (found && found.getBoundingClientRect().top - chapter.getBoundingClientRect().top > 40) target = found
+      }
+      // The start of a chapter goes exactly at the top (so that is the chapter the reading
+      // position records); a place inside a chapter gets a little room above it.
+      const room = target === chapter ? 0 : 12
+      el.scrollTop += target.getBoundingClientRect().top - el.getBoundingClientRect().top - room
+    }
+    holdPosition(el, place)
+  }, [])
+
+  // A tap on the reading area: a link goes where it points (inside the book, or to a
+  // website in a new tab), anything else shows or hides the controls. A link must never
+  // take the reader away from the book.
+  const handleContentClick = useCallback((e) => {
+    const link = e.target.closest ? e.target.closest('a') : null
+    if (link && e.currentTarget.contains(link) && link.hasAttribute('href')) {
+      const { folioChapter, folioAnchor } = link.dataset
+      if (folioChapter !== undefined || folioAnchor !== undefined) {
+        e.preventDefault()
+        const here = Number(link.closest('[data-section-index]')?.dataset.sectionIndex ?? 0)
+        jumpTo(folioChapter !== undefined ? Number(folioChapter) : here, folioAnchor)
+        return
+      }
+      const href = link.getAttribute('href') || ''
+      if (link.getAttribute('target') === '_blank' || /^(mailto|tel):/i.test(href)) return // the browser handles these
+      e.preventDefault()
+      return
+    }
+    setControlsVisible((v) => !v)
+  }, [jumpTo])
 
   // Native scroll, no iframe, no manager, nothing to fight. This is
   // also what tracks progress and lazily loads the next chapter.
@@ -717,6 +868,15 @@ export default function Reader() {
         </div>
       )}
 
+      {jumping && (
+        <div
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-30 px-3 py-1.5 rounded-full text-xs shadow-lg"
+          style={{ background: `${t.text}e6`, color: t.bg }}
+        >
+          Opening chapter...
+        </div>
+      )}
+
       {/* Reading surface. Plain HTML, real native scroll, no iframe. */}
       {!loading && !error && (
         <div
@@ -729,7 +889,7 @@ export default function Reader() {
             '--scroll-thumb': `${t.text}40`,
             '--scroll-thumb-hover': `${t.text}80`,
           }}
-          onClick={() => setControlsVisible((v) => !v)}
+          onClick={handleContentClick}
         >
           <div className="reader-content">
             {sections.map((s) => (
