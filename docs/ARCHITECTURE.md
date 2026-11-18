@@ -176,6 +176,8 @@ src/
       convert.js          Per-page flow: text, OCR or plate; figures; builds the epub
       render.js           Canvas helpers, finds pictures in PDFs and on scans
       ocr.js              Tesseract.js wrapper and the language list
+      enhance.js          Evens out lighting and contrast on a page picture before recognition
+      ocrClean.js         Fixes quotes, ellipses and digit-for-letter mistakes in recognised English text
       epub.js             Builds an EPUB 3 file with JSZip
   contexts/
     AuthContext.jsx       Current user, sign in/up/out, Google sign-in
@@ -295,6 +297,20 @@ A PDF is converted to an epub on the device, nothing is uploaded. The epub then 
 | 20 or more characters of text | The text is used as it is. No recognition needed. |
 | Almost no text, and the PDF is mostly like this (3 or more such pages, or half) | A scan. The page is drawn at about 200 dpi and read with Tesseract.js (text recognition). |
 | Almost no text, but only a few such pages in a normal book | A plate. Kept as an image. |
+
+**Scan accuracy.** Two steps improve what text recognition returns:
+1. **Before recognition** (`enhance.js`, all languages): the page picture is copied and cleaned. The uneven lighting is removed (the paper's brightness is estimated from the lightest parts around each point and divided out) and the contrast is stretched, with white placed at the 40th percentile of the page so the paper's grain becomes clean white instead of speckle (a page that is mostly dark uses the lightest 1% instead). It is deliberately not turned into pure black and white, which made noisy pages worse. Recognition reads the copy; figures are still cut from the original picture. If the copy cannot be made (not enough memory) the original is used. It adds about 0.2 s per page in a desktop browser.
+2. **After recognition** (`ocrClean.js`, English only, because the rules are English typography): straight and backwards quotation marks and apostrophes become proper curly ones (direction worked out from the text around them), `...` becomes an ellipsis, `--` a dash, and digits standing where a letter belongs inside an ordinary word are fixed (`01d`, `wa1ked`, `1t`). Numbers and units (`1st`, `5pm`, `15cm`, `1990s`) are left alone, and a curly quote that is already there is never second-guessed. It runs on whole paragraphs, only for paragraphs that came from scans. On about 430,000 characters of correct published fiction it changed one straight apostrophe.
+
+Measured by importing generated scans of dialogue-heavy fiction (1,893 words, 260 quotation marks and apostrophes) through the real app in a browser, before and after:
+
+| Scan quality | Words wrong before | Words wrong after |
+|---|---|---|
+| moderate (150 dpi, light blur and noise, slight tilt, uneven paper) | 1.9% | 0.2% |
+| fair (more blur, noise and shading) | 3.2% | 0.6% |
+| poor (120 dpi, blurry, grey, noisy, shaded, tilted) | 53% to 68% | 13% to 17% |
+
+On the poor scans the share of quotation marks kept went from 69% to 81% before, to 90% to 93% after. What is left at the fair level is mostly a full stop read as a comma and a few letters (`morning` read as `moming`); fixing those needs a dictionary and was not attempted. These are generated scans, not real ones, so real-world numbers will differ.
 
 **Cleaning up** (`layout.js`, pure logic with no browser dependencies, tested on its own):
 - Items on a page are grouped into lines. A page set in two columns is detected from a vertical gap and read left column, then right, with a full-width title kept in place.
@@ -472,7 +488,7 @@ These come from reading the code. They have not been exploited or load-tested.
 
 7. **Archive quality cannot be guaranteed.** The Archive does not review uploads, its language field is whatever the uploader typed, and the epubs it makes are produced from page scans by text recognition, so they can contain scanning errors. The vetting in section 5.6 uses only the metadata it is given and has not been checked against live Archive results (archive.org could not be reached from the build environment), so its thresholds are reasoned, not tuned. Gutenberg books are proofread transcriptions and do not have this problem.
 8. **Google Books downloads are untested against the live service.** The API documents an epub download link for free books, and a separate token link, and it is not known whether the plain link works without signing in. The code handles both outcomes (a refused or sign-in answer leaves the book out of the library with a clear message), but it was only tested with stand-ins for Google. Google may also rate-limit searches made without an API key. Like the Archive, its free books are mostly scans, so quality can vary.
-9. **PDF conversion is heuristic.** It was tested on generated PDFs with known text (digital PDFs came out paragraph for paragraph exact) and on a clean generated scan (no word errors), but not on a wide range of real files. Known weak spots: figures on multi-column scans are not found, figures drawn as vector graphics are not found, tables, footnotes and equations come out as ordinary paragraphs, bold and italic are not kept, books with no indents and no spacing between paragraphs can have paragraphs merged, and right-to-left PDFs with a text layer were not tried on real files. Large scans are slow, slower on a phone, and the screen has to stay on. Words in a title can come out run together ("THEGREATADVENTURES"): pdf.js merges pieces of text whose gap is under about a tenth of the text size into one piece before the converter sees them, so the gaps are gone and cannot be recovered from positions, and on scanned pages the text recognition can do the same to a decorative title. The Reader wraps such a long word so it cannot break the layout (section 5.5), but it is not split into words.
+9. **PDF conversion is heuristic.** It was tested on generated PDFs with known text (digital PDFs came out paragraph for paragraph exact) and on a clean generated scan (no word errors), but not on a wide range of real files. Known weak spots: figures on multi-column scans are not found, figures drawn as vector graphics are not found, tables, footnotes and equations come out as ordinary paragraphs, bold and italic are not kept, books with no indents and no spacing between paragraphs can have paragraphs merged, and right-to-left PDFs with a text layer were not tried on real files. Large scans are slow, slower on a phone, and the screen has to stay on. Words in a title can come out run together ("THEGREATADVENTURES"): pdf.js merges pieces of text whose gap is under about a tenth of the text size into one piece before the converter sees them, so the gaps are gone and cannot be recovered from positions, and on scanned pages the text recognition can do the same to a decorative title. The Reader wraps such a long word so it cannot break the layout (section 5.5), but it is not split into words. Recognised text from scans has some errors left: on generated scans, 0.2% to 0.6% of words at moderate and fair quality and 13% to 17% at poor quality (section 5.8). Poor means a blurry, grey, noisy, shaded 120 dpi scan, where the recognition engine itself is at its limit.
 10. **Text recognition depends on a public CDN** for its engine files the first time it is used. Offline use afterwards relies on caching that has not been tested in a real browser.
 11. **Housekeeping.** The `/api/gutenberg` and `/api/archive` rewrites are unused. The README still describes an epub.js rendition and does not mention the Internet Archive or importing. Progress percentage accuracy is unverified (section 6.2).
 
@@ -495,6 +511,7 @@ These come from reading the code. They have not been exploited or load-tested.
 | Google Books source | `src/lib/googlebooks.js`, and the download-first step in `src/pages/BookDetail.jsx` |
 | PDF import: paragraph rules, chapters | `src/lib/pdf/layout.js` |
 | PDF import: per-page flow, figures, scans | `src/lib/pdf/convert.js`, `render.js`, `ocr.js` |
+| Scan accuracy (picture cleanup before recognition, text cleanup after) | `src/lib/pdf/enhance.js`, `src/lib/pdf/ocrClean.js`, and where `convert.js` calls them |
 | PDF import: the dialog and resuming | `src/components/PdfImportDialog.jsx`, `src/lib/importPdf.js` |
 | Server relay behavior | `api/fetch-book.js` |
 | Offline caching and the PWA manifest | `vite.config.js` |
