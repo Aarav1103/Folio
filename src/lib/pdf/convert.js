@@ -13,6 +13,8 @@ import {
 import { buildEpub } from './epub.js'
 import { renderPage, canvasToJpeg, cropCanvas, releaseCanvas, inkFraction, findImageRects, detectScanFigures } from './render.js'
 import { createOcr, languageInfo } from './ocr.js'
+import { enhanceCanvas } from './enhance.js'
+import { cleanOcrText } from './ocrClean.js'
 
 const MIN_TEXT_CHARS = 20 // fewer characters than this on a page means it is a picture of text, or blank
 const OCR_DPI = 200
@@ -209,10 +211,15 @@ export async function convertPdf({ pdf, pdfjs, analysis, fileName, language = 'e
           }
           const scale = Math.min(OCR_DPI / 72, 3200 / Math.max(vp.width, vp.height))
           const canvas = await renderPage(page, scale)
+          let forOcr = null
           try {
             const ink = inkFraction(canvas)
             if (ink >= 0.002) { // an empty page needs no recognition
-              const blocks = await abortable(ocr.recognize(canvas), signal)
+              // Recognition is given a copy with the lighting evened out and the contrast stretched
+              // (see enhance.js); figures are still cut from the original picture. If the copy cannot
+              // be made (not enough memory), the original is used.
+              try { forOcr = enhanceCanvas(canvas) } catch { forOcr = null }
+              const blocks = await abortable(ocr.recognize(forOcr || canvas), signal)
               entry.lines = ocrBlocksToLines(blocks, scale)
               if (figures) {
                 const sizes = entry.lines.map((l) => l.size)
@@ -225,6 +232,7 @@ export async function convertPdf({ pdf, pdfjs, analysis, fileName, language = 'e
               }
             }
           } finally {
+            if (forOcr) releaseCanvas(forOcr)
             releaseCanvas(canvas)
           }
           if (store) {
@@ -271,6 +279,14 @@ export async function convertPdf({ pdf, pdfjs, analysis, fileName, language = 'e
     blocks.push(...b)
   })
   const merged = mergeContinuations(blocks)
+
+  // Text read from scans: fix what recognition usually gets wrong (straight or backwards quotes,
+  // three dots, digits inside words). English only: the rules are English typography.
+  if (lang.code === 'eng') {
+    for (const b of merged) {
+      if (b.kind !== 'img' && typeof b.text === 'string' && pages[b.page] && pages[b.page].kind === 'ocr') b.text = cleanOcrText(b.text)
+    }
+  }
 
   let starts = await readOutlineStarts(pdf)
   if (starts.length < 2) starts = headingStarts(merged)
