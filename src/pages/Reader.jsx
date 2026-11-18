@@ -540,6 +540,12 @@ export default function Reader() {
         .reader-content, .reader-content p { color: ${t.text}; font-family: 'Lora', Georgia, serif; }
         .reader-content { font-size: ${fontSize}px; line-height: 1.85; }
         .reader-content p { margin: 0 0 1.1em; }
+        /* A very long word (a title run together by a PDF, a web address) wraps instead of
+           making the whole reading area wider than the screen. Ordinary words are not
+           broken: this only applies to a word that cannot fit on a line by itself. */
+        .reader-content { overflow-wrap: anywhere; word-break: break-word; }
+        .reader-content pre { white-space: pre-wrap; }
+        .reader-content table { max-width: 100%; }
         .reader-content img, .reader-content svg { max-width: 100%; height: auto; display: block; margin: 1.5em auto; }
         .reader-content h1, .reader-content h2, .reader-content h3 {
           font-family: 'Lora', Georgia, serif; margin: 1.6em 0 0.8em; line-height: 1.3;
@@ -715,7 +721,8 @@ export default function Reader() {
       {!loading && !error && (
         <div
           ref={containerRef}
-          className="flex-1 overflow-y-auto"
+          // overflow-x-hidden: the reading area only ever scrolls up and down
+          className="flex-1 overflow-y-auto overflow-x-hidden"
           style={{
             WebkitOverflowScrolling: 'touch',
             // scrollbar colours that suit the chosen theme (see index.css)
