@@ -30,7 +30,7 @@ export default defineConfig({
         theme_color: '#2D6A5E',
         background_color: '#F7F5F0',
         display: 'standalone',
-        orientation: 'portrait',
+        orientation: 'any', // portrait or landscape, whichever the phone is held in
         start_url: '/',
         icons: [
           { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },

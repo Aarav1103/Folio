@@ -23,8 +23,12 @@ const THEMES = {
 }
 
 // Widest the column of text may be on a computer, in px (the box, padding included).
-// On a phone or tablet the column is always the screen's width, up to 700.
 const WIDTH_PX = { narrow: 700, medium: 900, wide: 1100, full: null }
+// On a phone or tablet held upright the column is always the screen's width, up to 700, and
+// there is no choice. Held sideways there is room for one: [share of the screen's width,
+// widest in px]. Medium is what the column was before (700 at most), so nothing changes
+// until a different width is picked.
+const WIDTH_TOUCH = { narrow: [62, 560], medium: [84, 700], wide: [92, 900], full: null }
 const WIDTH_LABEL = { narrow: 'Narrow', medium: 'Medium', wide: 'Wide', full: 'Full' } // tooltips and screen readers, the buttons show pictures
 
 // Reads a chapter's file out of the epub and parses it into a document,
@@ -191,11 +195,13 @@ function scrollToChapterPosition(container, index, fraction) {
 // layout changes. The element itself is kept, and it stays in the page while
 // only the style around it changes. Returns null if the chapter has no such
 // blocks (text sitting loose in a div, say); the caller then uses the chapter
-// fraction instead.
+// fraction instead. `scope` narrows the search to part of the page (the chapter at
+// the top, when that is known, so a book with many chapters loaded is not searched
+// from its first page every time).
 const BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, pre, figure, img, td'
-function readBlockAnchor(container) {
+function readBlockAnchor(container, scope = container) {
   const containerTop = container.getBoundingClientRect().top
-  for (const el of container.querySelectorAll(BLOCK_SELECTOR)) {
+  for (const el of scope.querySelectorAll(BLOCK_SELECTOR)) {
     if (el.querySelector(BLOCK_SELECTOR)) continue // only the innermost block
     const rect = el.getBoundingClientRect()
     if (rect.bottom > containerTop + 1) {
@@ -280,6 +286,28 @@ export default function Reader() {
     if (anchor.chapter) scrollToChapterPosition(el, anchor.chapter.index, anchor.chapter.fraction)
     else scrollToBlockAnchor(el, anchor)
   }, [fontSize, textWidth])
+
+  // Turning the phone (or resizing a window) changes how wide the text is, and the text
+  // reflows, so the same scroll offset would land somewhere else in the book. The spot
+  // being read is put back as soon as the new layout is in place. It has to be the one
+  // noted at the last scroll (spotRef, kept up to date by the saving code below): by the
+  // time a resize is reported the layout has already changed, so it can no longer be measured.
+  const spotRef = useRef(null)
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return undefined
+    let lastWidth = el.clientWidth
+    const observer = new ResizeObserver(() => {
+      const width = el.clientWidth
+      if (Math.abs(width - lastWidth) < 1) return // only the height changed (an address bar sliding away): nothing reflows
+      lastWidth = width
+      // (the noted spot is kept as it is: the next scroll replaces it, and until then every
+      // turn of the screen is measured from the same exact spot, so repeated turns do not drift)
+      if (spotRef.current) scrollToBlockAnchor(el, spotRef.current)
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [loading, error])
 
   useEffect(() => {
     let cancelled = false
@@ -605,6 +633,10 @@ export default function Reader() {
       // something earlier would still report your furthest point.
       const { index: currentIndex, fraction: fractionWithinChapter } = readAnchor(el)
 
+      // Note the exact paragraph too, for putting the place back after a turn of the screen
+      const chapterEl = el.querySelector(`[data-section-index="${currentIndex}"]`)
+      spotRef.current = (chapterEl && readBlockAnchor(el, chapterEl)) || readBlockAnchor(el)
+
       const overallPct = sectionCountRef.current
         ? Math.min(100, Math.round(((currentIndex + fractionWithinChapter) / sectionCountRef.current) * 100))
         : 0
@@ -675,18 +707,33 @@ export default function Reader() {
   }, [scrollBy])
 
   const t = THEMES[theme]
+  const touchBox = WIDTH_TOUCH[textWidth]
 
   return (
     <div className="fixed inset-0 flex flex-col" style={{ background: t.bg }}>
       {/* Scoped styling for the injected chapter HTML, no rendition
           theming API needed since this is just plain DOM now. */}
       <style>{`
-        .reader-content { max-width: 700px; margin: 0 auto; padding: 6vh 24px 12vh; }
-        /* The text width setting applies on computers only (a mouse), never on a phone or tablet. */
-        .reader-desktop-only { display: none; }
+        /* Side padding keeps clear of a phone's notch when it is held sideways (0 elsewhere). */
+        .reader-content { max-width: 700px; margin: 0 auto; padding: 6vh max(24px, env(safe-area-inset-right)) 12vh max(24px, env(safe-area-inset-left)); }
+        /* The text width setting is there on a computer (a mouse) and on a phone or tablet held
+           sideways. Held upright the screen is narrower than the column already. */
+        .reader-width-control { display: none; }
+        @media (pointer: coarse) and (orientation: landscape) {
+          .reader-content { max-width: ${touchBox ? `min(${touchBox[0]}vw, ${touchBox[1]}px)` : 'none'};${textWidth === 'full' ? ' padding-left: max(4vw, calc(env(safe-area-inset-left) + 8px)); padding-right: max(4vw, calc(env(safe-area-inset-right) + 8px));' : ''} }
+          .reader-width-control { display: block; }
+        }
         @media (hover: hover) and (pointer: fine) {
           .reader-content { max-width: ${WIDTH_PX[textWidth] ? WIDTH_PX[textWidth] + 'px' : 'none'};${textWidth === 'full' ? ' padding-left: 4vw; padding-right: 4vw;' : ''} }
-          .reader-desktop-only { display: block; }
+          .reader-width-control { display: block; }
+        }
+        /* The settings panel never runs off the bottom of the screen; it scrolls if it has to. Held
+           sideways (not much height) it is two columns instead of one. */
+        .reader-panel { width: 16rem; max-height: calc(100vh - 4.5rem); max-height: calc(100dvh - 4.5rem); overflow-y: auto; overscroll-behavior: contain; }
+        .reader-panel-col + .reader-panel-col { margin-top: 1.25rem; }
+        @media (orientation: landscape) and (max-height: 500px) {
+          .reader-panel { width: min(30rem, calc(100vw - 2rem)); display: grid; grid-template-columns: 1fr 1fr; column-gap: 1.5rem; }
+          .reader-panel-col + .reader-panel-col { margin-top: 0; }
         }
         .reader-content, .reader-content p { color: ${t.text}; font-family: 'Lora', Georgia, serif; }
         .reader-content { font-size: ${fontSize}px; line-height: 1.85; }
@@ -706,10 +753,12 @@ export default function Reader() {
 
       {/* Top bar, frosted glass, shown on tap */}
       <div
-        className={`absolute top-0 left-0 right-0 z-20 flex items-center justify-between px-4 py-3.5 transition-all duration-300 ${
+        className={`absolute top-0 left-0 right-0 z-20 flex items-center justify-between py-3.5 transition-all duration-300 ${
           controlsVisible ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-2 pointer-events-none'
         }`}
         style={{
+          paddingLeft: 'max(1rem, env(safe-area-inset-left))', // clear of a notch when held sideways
+          paddingRight: 'max(1rem, env(safe-area-inset-right))',
           background: `${t.bg}cc`,
           backdropFilter: 'blur(16px) saturate(1.4)',
           color: t.text,
@@ -754,16 +803,16 @@ export default function Reader() {
         <>
           <div className="fixed inset-0 z-20" onClick={() => setSettingsOpen(false)} />
           <div
-            className={`absolute top-14 z-30 w-64 rounded-2xl shadow-2xl p-4 ${
-              handedness === 'left' ? 'left-4' : 'right-4'
-            }`}
+            className="reader-panel absolute top-14 z-30 rounded-2xl shadow-2xl p-4"
             style={{
+              [handedness === 'left' ? 'left' : 'right']: `max(1rem, env(safe-area-inset-${handedness === 'left' ? 'left' : 'right'}))`,
               background: `${t.bg}f5`,
               backdropFilter: 'blur(20px) saturate(1.4)',
               color: t.text,
               border: `1px solid ${t.text}14`,
             }}
           >
+            <div className="reader-panel-col">
             <p className="text-[11px] font-semibold uppercase tracking-wide opacity-50 mb-2.5">Theme</p>
             <div className="flex gap-2.5 mb-5">
               {Object.entries(THEMES).map(([key, themeOpt]) => {
@@ -809,8 +858,11 @@ export default function Reader() {
               </button>
             </div>
 
-            <div className="reader-desktop-only">
-              <p className="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-wide opacity-50 mb-2.5 mt-5">
+            </div>
+
+            <div className="reader-panel-col">
+            <div className="reader-width-control mb-5">
+              <p className="flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-wide opacity-50 mb-2.5">
                 <span>Text width</span>
                 <span className="font-normal normal-case tracking-normal">{WIDTH_LABEL[textWidth]}</span>
               </p>
@@ -832,7 +884,7 @@ export default function Reader() {
               </div>
             </div>
 
-            <p className="text-[11px] font-semibold uppercase tracking-wide opacity-50 mb-2.5 mt-5">Reading hand</p>
+            <p className="text-[11px] font-semibold uppercase tracking-wide opacity-50 mb-2.5">Reading hand</p>
             <div className="flex bg-current/5 rounded-full p-1">
               {['left', 'right'].map((hand) => (
                 <button
@@ -845,6 +897,7 @@ export default function Reader() {
                   {hand}
                 </button>
               ))}
+            </div>
             </div>
           </div>
         </>
@@ -901,10 +954,12 @@ export default function Reader() {
 
       {/* Bottom bar, frosted glass, shown on tap */}
       <div
-        className={`absolute bottom-0 left-0 right-0 z-20 px-5 pt-4 pb-5 transition-all duration-300 ${
+        className={`absolute bottom-0 left-0 right-0 z-20 pt-4 pb-5 transition-all duration-300 ${
           controlsVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2 pointer-events-none'
         }`}
         style={{
+          paddingLeft: 'max(1.25rem, env(safe-area-inset-left))',
+          paddingRight: 'max(1.25rem, env(safe-area-inset-right))',
           background: `${t.bg}cc`,
           backdropFilter: 'blur(16px) saturate(1.4)',
           color: t.text,

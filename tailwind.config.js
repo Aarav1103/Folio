@@ -4,6 +4,11 @@ export default {
   darkMode: "class",
   theme: {
     extend: {
+      // A phone held sideways: wide, but only about 400px tall. The app then uses
+      // a slim icon rail on the left instead of the bottom bar or the full sidebar.
+      screens: {
+        rail: { raw: '(orientation: landscape) and (max-height: 500px)' },
+      },
       colors: {
         parchment: "#F7F5F0",
         ink: "#1A1814",
