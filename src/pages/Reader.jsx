@@ -257,7 +257,7 @@ function chapterFileSize(book, section) {
 export default function Reader() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { saveProgress, getProgress, refreshBookProgress, collection } = useLibrary()
+  const { saveProgress, getProgress, getKnownProgress, refreshBookProgress, collection, progressMap } = useLibrary()
   const { user } = useAuth()
 
   const containerRef = useRef(null)
@@ -309,6 +309,25 @@ export default function Reader() {
   // noted at the last scroll (spotRef, kept up to date by the saving code below): by the
   // time a resize is reported the layout has already changed, so it can no longer be measured.
   const spotRef = useRef(null)
+
+  // Keeping devices in step while a book is open. A phone left on an open book, then picked up
+  // after reading on a laptop, must show the laptop's place, and must not save its own old place
+  // over it. These track what this reader has accounted for:
+  //  - ownStampRef: the newest save it knows about (its own saves, and the position it opened at
+  //    or moved to). A newer position in the library came from another device.
+  //  - lastLocationRef: the position last saved, opened at or moved to. The same position is not
+  //    saved again, so a tap that does not move anything cannot re-stamp an old place as the newest.
+  //  - quietRef: nothing has been scrolled since the book opened or the app was returned to, so a
+  //    position arriving late may still be moved to (a reader is never pulled away mid-scroll).
+  //  - settlingRef: just returned to the app, nothing is saved until the account has answered.
+  const ownStampRef = useRef(0)
+  const lastLocationRef = useRef('')
+  const quietRef = useRef(true)
+  const settlingRef = useRef(false)
+  const flushSaveRef = useRef(null) // saves the current position now (set by the saving code below)
+  const stopRestoringRef = useRef(() => {}) // stops re-applying the saved place while images load (set when the book opens)
+  const [movedFrom, setMovedFrom] = useState(null) // where the reader was before it moved to another device's place
+
   useEffect(() => {
     const el = containerRef.current
     if (!el || typeof ResizeObserver === 'undefined') return undefined
@@ -330,6 +349,7 @@ export default function Reader() {
     // Set once the book is on screen, tears down the "keep the saved spot
     // pinned while images load" listeners below.
     let stopRestoring = () => {}
+    stopRestoringRef.current = () => stopRestoring()
 
     async function load() {
       setLoading(true)
@@ -393,7 +413,12 @@ export default function Reader() {
           refreshBookProgress(id),
           new Promise((resolve) => setTimeout(() => resolve(undefined), 2500)),
         ])
-        const existingProgress = newest || getProgress(id) || (await getProgressLocal(id))
+        const existingProgress = newest || getKnownProgress(id) || getProgress(id) || (await getProgressLocal(id))
+        // what this reader starts out knowing: anything newer that turns up later came from another device
+        ownStampRef.current = existingProgress?.updatedAt || 0
+        lastLocationRef.current = existingProgress?.location || ''
+        quietRef.current = true
+        settlingRef.current = false
         let savedIndex = 0
         let savedFraction = 0 // how far into that chapter, 0 to 1
         let savedPercentage = 0
@@ -547,7 +572,7 @@ export default function Reader() {
   // one loaded means loading the ones in between first.
   const sectionsRef = useRef([])
   useEffect(() => { sectionsRef.current = sections }, [sections])
-  const jumpTo = useCallback(async (index, anchor) => {
+  const jumpTo = useCallback(async (index, anchor, fraction) => {
     const el = containerRef.current
     const book = bookRef.current
     if (!el || !book) return
@@ -591,6 +616,11 @@ export default function Reader() {
     }
 
     const place = () => {
+      // a place given as how far down the chapter (another device's saved position), not as a link target
+      if (typeof fraction === 'number') {
+        scrollToChapterPosition(el, index, fraction)
+        return
+      }
       let chapter = el.querySelector(`[data-section-index="${index}"]`)
       if (!chapter) {
         // that chapter could not be loaded: go to the nearest one before it
@@ -621,6 +651,7 @@ export default function Reader() {
       const { folioChapter, folioAnchor } = link.dataset
       if (folioChapter !== undefined || folioAnchor !== undefined) {
         e.preventDefault()
+        quietRef.current = false
         const here = Number(link.closest('[data-section-index]')?.dataset.sectionIndex ?? 0)
         jumpTo(folioChapter !== undefined ? Number(folioChapter) : here, folioAnchor)
         return
@@ -632,6 +663,89 @@ export default function Reader() {
     }
     setControlsVisible((v) => !v)
   }, [jumpTo])
+
+  // Moves to the position another device saved, if it saved one after this reader's last
+  // save or the position it opened at. Unless `force`, only if nothing has been scrolled
+  // since the book opened or the app was returned to. Returns true if the view moved.
+  const adoptNewer = useCallback((force) => {
+    const el = containerRef.current
+    const known = getKnownProgress(id)
+    if (!el || !known || !(known.updatedAt > ownStampRef.current)) return false
+    if (!force && !quietRef.current) return false
+    let spot = null
+    try { spot = JSON.parse(known.location) } catch { /* unreadable: nothing to move to */ }
+    if (!spot || typeof spot.sectionIndex !== 'number') return false
+    const index = Math.min(Math.max(0, spot.sectionIndex), Math.max(0, sectionCountRef.current - 1))
+    const fraction = Math.min(1, Math.max(0, typeof spot.fraction === 'number' ? spot.fraction : 0))
+    ownStampRef.current = known.updatedAt
+    lastLocationRef.current = known.location
+    quietRef.current = true
+    const here = readAnchor(el)
+    if (here.index === index && Math.abs(here.fraction - fraction) < 0.005) return false // already there
+    stopRestoringRef.current() // do not let the place the book opened at be put back while images load
+    setMovedFrom(here)
+    jumpTo(index, undefined, fraction)
+    return true
+  }, [id, getKnownProgress, jumpTo])
+
+  // Returning to the app (or the window, or the connection) asks the account what is newest
+  // for this book and moves to it. Saving waits for the answer, up to 3 seconds, so a touch on
+  // the old place cannot be saved over a newer one in the meantime.
+  useEffect(() => {
+    if (loading || error) return undefined
+    let cancelled = false
+    let lastRun = 0
+    async function resync() {
+      if (settlingRef.current || Date.now() - lastRun < 2000) return
+      lastRun = Date.now()
+      settlingRef.current = true
+      quietRef.current = true
+      try {
+        await Promise.race([refreshBookProgress(id), new Promise((resolve) => setTimeout(resolve, 3000))])
+      } catch {
+        // the account could not be reached: carry on with what this device has
+      }
+      settlingRef.current = false
+      if (cancelled) return
+      if (!adoptNewer(true)) flushSaveRef.current?.() // whatever was scrolled meanwhile is saved now
+    }
+    const onShown = () => { if (document.visibilityState === 'visible') resync() }
+    document.addEventListener('visibilitychange', onShown)
+    window.addEventListener('focus', onShown)
+    window.addEventListener('pageshow', resync)
+    window.addEventListener('online', resync)
+    return () => {
+      cancelled = true
+      settlingRef.current = false
+      document.removeEventListener('visibilitychange', onShown)
+      window.removeEventListener('focus', onShown)
+      window.removeEventListener('pageshow', resync)
+      window.removeEventListener('online', resync)
+    }
+  }, [loading, error, id, refreshBookProgress, adoptNewer])
+
+  // A newer position can also arrive later without the app having been left: the request made
+  // when the book opened was slow, or the library's regular refresh found one. It is moved to
+  // only if nothing has been scrolled yet.
+  const knownStamp = progressMap[id]?.updatedAt
+  useEffect(() => {
+    if (!loading && !error && knownStamp > ownStampRef.current) adoptNewer(false)
+  }, [knownStamp, loading, error, adoptNewer])
+
+  // The note after moving to another device's place disappears by itself
+  useEffect(() => {
+    if (!movedFrom) return undefined
+    const timer = setTimeout(() => setMovedFrom(null), 10000)
+    return () => clearTimeout(timer)
+  }, [movedFrom])
+  function goBackToMyPlace() {
+    const back = movedFrom
+    setMovedFrom(null)
+    if (back) {
+      quietRef.current = false
+      jumpTo(back.index, undefined, back.fraction) // saved as the newest position once the view has moved
+    }
+  }
 
   // Native scroll, no iframe, no manager, nothing to fight. This is
   // also what tracks progress and lazily loads the next chapter.
@@ -660,15 +774,18 @@ export default function Reader() {
 
       const overallPct = overallPercent(chapterWeightsRef.current, currentIndex, fractionWithinChapter, sectionCountRef.current)
       setPercentage(overallPct)
-      saveProgress(id, {
-        // The exact spot, not just the rounded overall percentage, so
-        // resuming can land precisely where reading stopped.
-        location: JSON.stringify({
-          sectionIndex: currentIndex,
-          fraction: Math.round(fractionWithinChapter * 1000) / 1000,
-        }),
-        percentage: overallPct,
+      // The exact spot, not just the rounded overall percentage, so
+      // resuming can land precisely where reading stopped.
+      const location = JSON.stringify({
+        sectionIndex: currentIndex,
+        fraction: Math.round(fractionWithinChapter * 1000) / 1000,
       })
+      if (settlingRef.current) return // just came back: wait to hear what the account holds first
+      if (location === lastLocationRef.current) return // not moved: saving again would only re-stamp it as the newest
+      lastLocationRef.current = location
+      saveProgress(id, { location, percentage: overallPct })
+      // saveProgress stamps the position before it first waits, so this is that save's stamp
+      ownStampRef.current = getKnownProgress(id)?.updatedAt ?? ownStampRef.current
     }
 
     function checkAndUpdate() {
@@ -698,18 +815,27 @@ export default function Reader() {
       if (document.visibilityState === 'hidden') saveNow()
     }
 
+    // Reading here: a position that arrives from another device after this is not moved to
+    const userMoved = () => { quietRef.current = false }
+    flushSaveRef.current = () => { clearTimeout(debounce); unsaved = false; saveCurrentSpot() }
+
     el.addEventListener('scroll', handleScroll, { passive: true })
+    el.addEventListener('wheel', userMoved, { passive: true })
+    el.addEventListener('touchmove', userMoved, { passive: true })
     el.addEventListener('touchend', checkAndUpdate)
     document.addEventListener('visibilitychange', handleVisibility)
     window.addEventListener('pagehide', saveNow)
     return () => {
       saveNow()
+      flushSaveRef.current = null
       el.removeEventListener('scroll', handleScroll)
+      el.removeEventListener('wheel', userMoved)
+      el.removeEventListener('touchmove', userMoved)
       el.removeEventListener('touchend', checkAndUpdate)
       document.removeEventListener('visibilitychange', handleVisibility)
       window.removeEventListener('pagehide', saveNow)
     }
-  }, [sections, loadNextSection, id, saveProgress])
+  }, [sections, loadNextSection, id, saveProgress, getKnownProgress])
 
   const scrollBy = useCallback((amount) => {
     containerRef.current?.scrollBy({ top: amount, behavior: 'smooth' })
@@ -717,8 +843,8 @@ export default function Reader() {
 
   useEffect(() => {
     function handleKey(e) {
-      if (e.key === 'ArrowDown' || e.key === 'PageDown') scrollBy(window.innerHeight * 0.85)
-      if (e.key === 'ArrowUp' || e.key === 'PageUp') scrollBy(-window.innerHeight * 0.85)
+      if (e.key === 'ArrowDown' || e.key === 'PageDown') { quietRef.current = false; scrollBy(window.innerHeight * 0.85) }
+      if (e.key === 'ArrowUp' || e.key === 'PageUp') { quietRef.current = false; scrollBy(-window.innerHeight * 0.85) }
       if (e.key === 'Escape') { setSettingsOpen(false); setControlsVisible(false) }
     }
     window.addEventListener('keydown', handleKey)
@@ -946,6 +1072,19 @@ export default function Reader() {
           style={{ background: `${t.text}e6`, color: t.bg }}
         >
           Opening chapter...
+        </div>
+      )}
+
+      {movedFrom && !jumping && (
+        <div
+          role="status"
+          className="fixed left-1/2 -translate-x-1/2 bottom-20 z-30 flex items-center gap-3 px-4 py-2 rounded-full text-xs shadow-lg max-w-[calc(100vw-2rem)]"
+          style={{ background: `${t.text}e6`, color: t.bg }}
+        >
+          <span>Moved to where you stopped on another device</span>
+          <button onClick={goBackToMyPlace} className="font-medium underline whitespace-nowrap">
+            Go back
+          </button>
         </div>
       )}
 
