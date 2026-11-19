@@ -502,6 +502,10 @@ export function LibraryProvider({ children }) {
 
   const getProgress = useCallback((bookId) => progressMap[bookId] || null, [progressMap])
 
+  // The newest position known on this device right now, including one just taken from the
+  // account. Unlike getProgress it is never a render behind, and it does not change identity.
+  const getKnownProgress = useCallback((bookId) => progressRef.current[bookId] || null, [])
+
   const isInCollection = useCallback(
     (bookId) => collection.some((b) => b.id === bookId),
     [collection]
@@ -517,6 +521,7 @@ export function LibraryProvider({ children }) {
     removeFromCollection,
     saveProgress,
     getProgress,
+    getKnownProgress,
     refreshBookProgress,
     isInCollection,
   }
