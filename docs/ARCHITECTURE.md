@@ -170,6 +170,7 @@ src/
     cloudFiles.js         Upload, download, list and delete a book's file in Supabase Storage
     recency.js            Library and shelf order: most recently added or read first
     readerPrefs.js        Saves and checks the reader's theme, text size, text width and reading hand on this device
+    readingProgress.js    Works out the progress percentage, weighing each chapter by its length
     importPdf.js          Opens a PDF, converts it to an epub, hands it to importEpub
     pdf/                  PDF to epub conversion (section 5.8), loaded only when a PDF is imported
       layout.js           Pure logic: text positions -> paragraphs, headings, chapters
@@ -367,12 +368,18 @@ Only these fields reach Supabase: `id` as `book_id`, `title`, `author`, `cover`,
 location   = JSON string: { sectionIndex, fraction }
              sectionIndex = chapter number (0-based spine position)
              fraction     = how far down that chapter, 0 to 1
-percentage = round((sectionIndex + fraction) / numberOfChapters * 100)
+percentage = round(share of the book's text before this spot * 100)
 ```
 
-Progress saved by older versions has no `fraction`. The reader works the position back out from the chapter and the percentage.
+The share counts each chapter for its length, not equally (`src/lib/readingProgress.js`). A chapter's length is estimated by the size of its file inside the epub, read from the zip's file index when the book opens (`chapterFileSize` in `Reader.jsx`, which reads `uncompressedSize` from JSZip's own entry data), so nothing is unpacked and chapters that are not loaded yet are counted too. The percentage is then (the weights of the chapters before this one + the fraction of this one's weight) / the total. Every chapter counts for at least 1000 bytes, so a cover or an image-only page is still a step; a chapter whose size cannot be read gets the median size of the others; if no size can be read at all, every chapter counts the same (which is what the percentage did before). If the lookup ever stopped working (it uses a field of a library's internal data), the percentage falls back to that, and nothing else changes.
 
-Note that the percentage counts every chapter equally, whatever its length or whether it is front matter. Its accuracy as a measure of "how much of the book" has not been verified.
+On a real epub (Harry Potter, 20 chapters from 435 bytes to 64,000) counting chapters equally was off by up to 15 points (8 on average) against the true share of the text, and weighing by file size was off by 1.3 at worst (0.3 on average). The estimate includes markup, so it is not exact, and this was measured on one real book plus generated ones.
+
+What is saved is the same as before (`location` is unchanged), so positions sync between devices exactly as they did. Only `percentage` changes meaning. When a book is opened, the bar is worked out again from the saved spot (when the saved spot has a `fraction`), so a percentage saved by an older version is corrected at once in the reader. The library cards and the Home shelf show the stored percentage, so they update for a book the next time it is read. A device still running an older version of the app saves the old equal-chapter percentage until it updates.
+
+Progress saved by older versions has no `fraction`. The reader works the position back out from the chapter and the percentage, using the old equal-chapter formula (that is how those records were made), and the first save after that has a fraction.
+
+Known limits: front and back matter count as part of the book, so the percentage can stop a few points short when the story ends if licence or "also by" pages follow it (expected for Project Gutenberg books, which end with a licence text; not measured on one, none was available offline); the percentage shown while scrolling inside a chapter follows the chapter's scroll height, so a chapter that is mostly pictures moves it by height, not by words.
 
 ### 6.3 Offline queue entries
 
@@ -500,7 +507,7 @@ These come from reading the code. They have not been exploited or load-tested.
 9. **PDF conversion is heuristic.** It was tested on generated PDFs with known text (digital PDFs came out paragraph for paragraph exact) and on a clean generated scan (no word errors), but not on a wide range of real files. Known weak spots: figures on multi-column scans are not found, figures drawn as vector graphics are not found, tables, footnotes and equations come out as ordinary paragraphs, bold and italic are not kept, books with no indents and no spacing between paragraphs can have paragraphs merged, and right-to-left PDFs with a text layer were not tried on real files. Large scans are slow, slower on a phone, and the screen has to stay on. Words in a title can come out run together ("THEGREATADVENTURES"): pdf.js merges pieces of text whose gap is under about a tenth of the text size into one piece before the converter sees them, so the gaps are gone and cannot be recovered from positions, and on scanned pages the text recognition can do the same to a decorative title. The Reader wraps such a long word so it cannot break the layout (section 5.5), but it is not split into words. Recognised text from scans has some errors left: on generated scans, 0.2% to 0.6% of words at moderate and fair quality and 13% to 17% at poor quality (section 5.8). Poor means a blurry, grey, noisy, shaded 120 dpi scan, where the recognition engine itself is at its limit.
 10. **Text recognition depends on a public CDN** for its engine files the first time it is used. Offline use afterwards relies on caching that has not been tested in a real browser.
 11. **Landscape mode was tested only in an emulated browser.** The width rules, panel, icon rail and rotation keeping your place were tested in Chromium with a touch phone viewport and a resized window, and the notch padding with its safe-area emulation. Nothing was tried on a real phone, where the exact rotation timing, the address bar and a real notch can differ. A very quick rotation straight after a scroll (within about 150 ms, or during a fling) puts the text back to the spot from the scroll before.
-12. **Housekeeping.** The `/api/gutenberg` and `/api/archive` rewrites are unused. The README still describes an epub.js rendition and does not mention the Internet Archive or importing. Progress percentage accuracy is unverified (section 6.2).
+12. **Housekeeping.** The `/api/gutenberg` and `/api/archive` rewrites are unused. The README still describes an epub.js rendition and does not mention the Internet Archive or importing. Progress percentage accuracy was checked on one real epub only (section 6.2).
 
 ---
 
@@ -526,6 +533,7 @@ These come from reading the code. They have not been exploited or load-tested.
 | Server relay behavior | `api/fetch-book.js` |
 | Offline caching and the PWA manifest | `vite.config.js` |
 | Colors, fonts | `tailwind.config.js` and `src/index.css` |
+| The progress percentage (chapter weights, rounding, fallbacks) | `src/lib/readingProgress.js`, and `chapterFileSize` and `saveCurrentSpot` in `src/pages/Reader.jsx` |
 | Reader settings (theme, text size, text width, reading hand): saving, loading and checking stored values | `src/lib/readerPrefs.js`, used by `src/pages/Reader.jsx` |
 | Text width options, their pictures, and the keep-your-place logic in the reader | `WIDTH_PX`, `WIDTH_TOUCH`, `readBlockAnchor`, `keepPlace` and the `ResizeObserver` effect in `src/pages/Reader.jsx`, `src/components/WidthIcon.jsx` |
 | Landscape phone layout (icon rail, two-column settings panel, notch padding, installed-app orientation) | `rail` screen in `tailwind.config.js`, `src/components/NavShell.jsx`, the `<style>` block in `src/pages/Reader.jsx`, `orientation` in `vite.config.js` |

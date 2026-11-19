@@ -8,6 +8,7 @@ import { downloadBookFile } from '../lib/cloudFiles'
 import { getBookFile, saveBookFile, getBookMeta, getProgressLocal } from '../lib/db'
 import { fetchBookContent } from '../lib/gutendex'
 import { resolveArchiveEpubUrl } from '../lib/archive'
+import { chapterWeights, overallPercent } from '../lib/readingProgress'
 import {
   ArrowLeft, Sun, Moon, Coffee, Minus, Plus as PlusIcon, Check, BookOpen,
 } from 'lucide-react'
@@ -239,6 +240,20 @@ function readAnchor(container) {
   return { index, fraction }
 }
 
+// How big a chapter's file is inside the epub, in bytes. It is read from the zip's index,
+// so nothing is unpacked. Used to weigh chapters by length for the progress percentage
+// (src/lib/readingProgress.js). Returns undefined if it cannot be told, and that chapter
+// is then given a typical share instead.
+function chapterFileSize(book, section) {
+  try {
+    const path = decodeURIComponent(String(book.resolve(section.url)).replace(/^\/+/, ''))
+    const size = book.archive?.zip?.file(path)?._data?.uncompressedSize
+    return Number.isFinite(size) ? size : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export default function Reader() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -248,6 +263,7 @@ export default function Reader() {
   const containerRef = useRef(null)
   const bookRef = useRef(null)
   const sectionCountRef = useRef(0)
+  const chapterWeightsRef = useRef([]) // each chapter's share of the book, for the percentage
   const loadingNextRef = useRef(false)
 
   const [loading, setLoading] = useState(true)
@@ -363,6 +379,7 @@ export default function Reader() {
 
         const total = book.spine.spineItems.length
         sectionCountRef.current = total
+        chapterWeightsRef.current = chapterWeights(book.spine.spineItems.map((item) => chapterFileSize(book, item)))
 
         // The library's in-memory progress can still be empty here, if
         // this page was opened directly (a refresh, a link) before the
@@ -380,6 +397,7 @@ export default function Reader() {
         let savedIndex = 0
         let savedFraction = 0 // how far into that chapter, 0 to 1
         let savedPercentage = 0
+        let savedSpotIsExact = false // the saved position has a fraction, so the percentage can be worked out again
         if (existingProgress?.location) {
           savedPercentage = existingProgress.percentage || 0
           try {
@@ -387,6 +405,7 @@ export default function Reader() {
             savedIndex = Math.min(parsedLoc.sectionIndex || 0, total - 1)
             if (typeof parsedLoc.fraction === 'number') {
               savedFraction = parsedLoc.fraction
+              savedSpotIsExact = true
             } else {
               // Progress saved by an older version only has the chapter
               // and a rounded overall percentage, so work the spot within
@@ -425,7 +444,9 @@ export default function Reader() {
         }
         if (cancelled) return
         setSections(loaded)
-        setPercentage(savedPercentage)
+        // Worked out again from the saved spot (not just read back), so the bar is right even
+        // for progress saved before chapters were weighed by length.
+        setPercentage(savedSpotIsExact ? overallPercent(chapterWeightsRef.current, savedIndex, savedFraction, total) : savedPercentage)
 
         setLoading(false)
 
@@ -637,9 +658,7 @@ export default function Reader() {
       const chapterEl = el.querySelector(`[data-section-index="${currentIndex}"]`)
       spotRef.current = (chapterEl && readBlockAnchor(el, chapterEl)) || readBlockAnchor(el)
 
-      const overallPct = sectionCountRef.current
-        ? Math.min(100, Math.round(((currentIndex + fractionWithinChapter) / sectionCountRef.current) * 100))
-        : 0
+      const overallPct = overallPercent(chapterWeightsRef.current, currentIndex, fractionWithinChapter, sectionCountRef.current)
       setPercentage(overallPct)
       saveProgress(id, {
         // The exact spot, not just the rounded overall percentage, so
