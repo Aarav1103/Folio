@@ -17,6 +17,9 @@ const FOREGROUND_COOLDOWN_MS = 2000
 const FULL_REFRESH_COOLDOWN_MS = 15000
 // A request to the account that has not answered by now is given up on.
 const REQUEST_TIMEOUT_MS = 20000
+// A book added on this device counts as "just added" for this long: longer than a request to
+// the account may take, with some margin. See the refresh of the book list (reconcileWithRemote).
+const RECENT_ADD_MS = REQUEST_TIMEOUT_MS + 25000
 
 // (Older browsers have no AbortSignal.timeout: the request then simply has no time limit.)
 const requestSignal = () =>
@@ -90,6 +93,13 @@ export function LibraryProvider({ children }) {
   const initialized = useRef(false) // this device's own data has been loaded
   const [ready, setReady] = useState(false) // the same, as state: code that adds books waits for it
   const collectionRef = useRef([])
+  // Books added on this device a moment ago: bookId -> { book, at }. The account's list of books,
+  // if it was asked for before the account was told about the book, does not have it yet, and a
+  // book missing from that list is taken to have been removed on another device. Without this a
+  // book added (or imported, or shared to the app) just as the app opened vanished from the
+  // library when the list arrived, and if the account had not been told yet, its stored file
+  // was deleted as well.
+  const recentAddsRef = useRef({})
   const progressRef = useRef({})
   const lastFullRefreshRef = useRef(0)
 
@@ -276,9 +286,21 @@ export function LibraryProvider({ children }) {
         pending.filter((p) => p.type === 'add_book').map((p) => p.book.id)
       )
 
+      // books added here a moment ago (forgetting those long past)
+      const recentAdds = () => {
+        const now = Date.now()
+        const recent = {}
+        for (const [id, entry] of Object.entries(recentAddsRef.current)) {
+          if (now - entry.at < RECENT_ADD_MS) recent[id] = entry.book
+          else delete recentAddsRef.current[id]
+        }
+        return recent
+      }
+      const justAdded = recentAdds()
+
       const merged = { ...Object.fromEntries(books.map((b) => [b.id, b])) }
       for (const localId of Object.keys(merged)) {
-        if (!remoteBookIds.has(localId) && !pendingAddIds.has(localId)) {
+        if (!remoteBookIds.has(localId) && !pendingAddIds.has(localId) && !justAdded[localId]) {
           delete merged[localId]
           localdb.deleteBookMeta(localId).catch(() => {})
           localdb.deleteBookFile(localId).catch(() => {})
@@ -297,6 +319,11 @@ export function LibraryProvider({ children }) {
           addedAt: rb.created_at,
         }
         await localdb.saveBookMeta(merged[rb.book_id])
+      }
+      // Books added here while this refresh was under way (or whose add has not reached the
+      // account yet) are not in the list the account sent: they stay.
+      for (const [id, book] of Object.entries(recentAdds())) {
+        if (!merged[id]) merged[id] = book
       }
       setCollection(Object.values(merged))
     } catch (err) {
@@ -396,6 +423,7 @@ export function LibraryProvider({ children }) {
   }, [isAuthenticated, isOnline, user?.id])
 
   const addToCollection = useCallback(async (book) => {
+    recentAddsRef.current[book.id] = { book, at: Date.now() }
     await localdb.saveBookMeta(book)
     setCollection((prev) => {
       if (prev.some((b) => b.id === book.id)) return prev
@@ -441,6 +469,7 @@ export function LibraryProvider({ children }) {
   }, [isAuthenticated, isOnline, user?.id])
 
   const removeFromCollection = useCallback(async (bookId) => {
+    delete recentAddsRef.current[bookId]
     await localdb.deleteBookMeta(bookId)
     await localdb.deleteBookFile(bookId)
     setCollection((prev) => prev.filter((b) => b.id !== bookId))
