@@ -167,6 +167,8 @@ src/
     supabase.js           Supabase client (reads VITE_ env vars)
     db.js                 IndexedDB wrapper (books, files, progress, pendingSync, folders, placements, PDF jobs)
     folders.js            Rules for library folders: names, order, combining changes from two devices, the library's layout
+    dragDrop.js           Small rules for dragging in the library: which side of a tile, scroll speed near the edges, which books a drag carries
+    useLibraryDrag.js     The drag itself, with a mouse or a finger
     progressMerge.js      Rules for combining progress from two devices and for stamping a new save later than the one it replaces
     gutendex.js           Gutendex client, book mapping, fetchBookContent()
     archive.js            Internet Archive client, lazy epub lookup, vetting of results
@@ -203,6 +205,7 @@ src/
     ConfirmDialog.jsx     "Are you sure" before deleting a folder
     Modal.jsx             The dialog frame the three above share
     ActionMenu.jsx        The small "..." button and list on a book or folder, kept on the screen
+    DropTray.jsx          "Move to" chips at the top of the screen while a book is dragged inside a folder
     ImportEpubButton.jsx  The Import button (file picker) and the list of stopped scans that can be resumed
     ImportStatus.jsx      The one place that shows "Importing...", what was added, and what failed
     DropZone.jsx          Files dropped anywhere on the window: the blurred "Drop to add" screen and the import
@@ -360,6 +363,24 @@ On the poor scans the share of quotation marks kept went from 69% to 81% before,
 **Other devices:** the converted epub is what is copied to the account (section 7), so a second device downloads the finished book and never has to read a scan again.
 
 **Identity:** the book id is `import-` plus a hash of the PDF, so the same PDF imported on a second device shares progress. If the two conversions split chapters differently, positions can be a little off.
+
+### 5.9 The library: folders and dragging
+
+`Collection.jsx` is the Library page. It shows the folders first (in the order they were arranged), then the books that are in no folder (most recently added or read first), in the same grid. A folder (`FolderTile.jsx`) is a card with the covers of up to four of its books, its name and its count. Opening it puts `?folder=<id>` in the address (so Back and reload work) and shows only its books, under its name, with Rename and Delete folder; a folder that no longer exists (deleted on another device) shows the library instead. Search looks through what is in view: in the library every book, including those inside folders (marked "In <folder>"), and folders by name; inside a folder only that folder's books. Results are most recent first.
+
+Ways to organise (all work on a phone and a computer):
+- **The "..." menu** on a book (`ActionMenu.jsx`): Move to folder (a picker, `FolderPicker.jsx`, that can also make a new folder or take books out), Take out of folder, Select. On a folder: Rename, Delete folder. The menu is placed against its button but kept on the screen, and opens upward near the bottom.
+- **Select** marks books (a tap marks instead of opening) and a bar offers Move to folder for all of them.
+- **Dragging** (below).
+
+**Dragging** is done by `src/lib/useLibraryDrag.js`, not by the browser's own drag and drop (which does not work on touch screens and cannot be styled), using pointer events:
+- *What can be picked up* is an element with `data-drag-kind` (`book` or `folder`) and `data-drag-id`. *Where it can go* is found from what is under the pointer (`document.elementsFromPoint`): `data-drop-folder="<id>"` (a folder tile, or a chip in the tray) and `data-drop-root` ("your library": the link back out of a folder, and a chip in the tray). A book dropped on a folder goes into it; on "your library" it is taken out. A folder dropped on another folder goes before it (left half) or after it (right half). A folder cannot be dropped on a book, on itself, or while searching (the list is partial). There are no folders inside folders.
+- *Starting:* a mouse drag starts after the pointer moves 6 px. On a touch screen, **hold a finger still for about 0.4 seconds, then drag**; moving first cancels the pick-up so the page scrolls as usual. Once a drag has started, the page does not scroll under the finger (`touchmove` is cancelled), and a long press does not open the browser's own menu. A tap or click that did not become a drag works as before, and the "..." button is not a handle.
+- *While dragging:* the item is shown as a small tilted copy that follows the pointer (small enough to leave the target in sight), the original is dimmed, the folder under a dragged book gets a ring, and a bar shows where a folder would land. Near the top or bottom edge the page scrolls by itself, faster the closer to the edge. Inside an open folder a tray at the top ("Move to": your library and the other folders) appears, since none of those is in view. These marks are set directly on the elements (data attributes, styled in `src/index.css`) rather than through React state, so dragging stays smooth.
+- *Ending:* dropping puts the book (or books) in the folder, or moves the folder. Escape, or the browser taking the touch back, cancels. The click the browser sends right after a drop is stopped (only within a few milliseconds, so a click on something else a moment later is not lost), so a drag that ends on the card that was picked up does not open it.
+- *Several books:* dragging one of several selected books carries all of them (the copy shows the count), and selecting ends after the move. Dragging a book that is not selected moves only that book and leaves the selection alone.
+- Reordering folders changes only the moved folder's `position` (a number between its new neighbours, see section 6.4), so it syncs as one small change. If the neighbours have become too close to tell apart, every folder is given a fresh whole position.
+- Books are not put in a hand-picked order: the library is sorted by recency, as asked for earlier. Only folders have an order of their own.
 
 ---
 
@@ -567,7 +588,8 @@ These come from reading the code. They have not been exploited or load-tested.
 12. **Following the account while a book is open was tested with stand-ins.** The phone-reads, laptop-reads, phone-returns case (and slow, offline and "already reading" variants) was tested with two emulated browsers sharing a fake account, with the app's own "hidden" and "visible" signals sent by the test. Nothing was tried on real devices, where the exact order of events when a phone wakes (visibility, focus, network coming back) may differ. If two devices are read at the same moment the one scrolled last wins, which is by design. The check that the reader's own saves are not mistaken for another device's has no test of its own: removing it changes nothing a user could see in ordinary use.
 13. **Dropping and sharing files was tested with stand-ins.** Dropped files were simulated with browser drag events carrying files, and a share was simulated with the same kind of form post a phone's Share menu makes, sent through the real service worker. Nothing was tried with a real file manager or share sheet. Android lists an app in the Share menu by file type: a file manager that labels an .epub as a generic file (not `application/epub+zip`) will not offer Folio, and the fix would be to accept generic types too, at the cost of Folio appearing for every kind of file. A very large shared PDF is read into memory by the worker.
 14. **Folders were tested with stand-ins.** Everything was tested in an emulated browser against a fake account, including two devices sharing it, going offline and the tables missing. Nothing was tried on real devices. The two tables were created in the live project with `supabase-folders.sql` and the security advisor reports nothing about them, but no real row was written. Folders are not scoped per user on a shared device (like everything in IndexedDB, risk 3). A book removed from the library keeps its placement row (it is ignored, and used again if the same book is added back).
-15. **Housekeeping.** The `/api/gutenberg` and `/api/archive` rewrites are unused. The README still describes an epub.js rendition and does not mention the Internet Archive or importing. Progress percentage accuracy was checked on one real epub only (section 6.2).
+15. **Dragging was tested with synthetic input.** Mouse drags were made with the browser automation's mouse, and touch drags with touch events sent through the browser's debugging protocol (hold, move, lift), in an emulated phone. Nothing was tried on a real phone, where the hold time, the feel of the drag and whether the browser's own menu or scrolling interferes (it is blocked, but browsers differ) are the things most likely to differ. The "hold, then drag" gesture is not discoverable by itself: the "..." menu and Select are the visible ways, dragging is the shortcut.
+16. **Housekeeping.** The `/api/gutenberg` and `/api/archive` rewrites are unused. The README still describes an epub.js rendition and does not mention the Internet Archive or importing. Progress percentage accuracy was checked on one real epub only (section 6.2).
 
 ---
 
@@ -582,7 +604,8 @@ These come from reading the code. They have not been exploited or load-tested.
 | Reading view, progress and resume | `src/pages/Reader.jsx` |
 | Copying imported books to the account, and fetching them on another device | `src/lib/cloudFiles.js`, the file sync in `src/contexts/LibraryContext.jsx`, `src/pages/Reader.jsx` and `src/pages/BookDetail.jsx` |
 | How and when progress and the library sync between devices (polling, queue, merge rules) | `src/contexts/LibraryContext.jsx`, `src/lib/progressMerge.js`, the queue helpers in `src/lib/db.js`, `keepalive` in `src/lib/supabase.js`, the save-on-leaving logic in `src/pages/Reader.jsx` |
-| Library folders: the rules (names, order, merging, layout) | `src/lib/folders.js` |
+| Library folders: the rules (names, order, merging, reordering, layout) | `src/lib/folders.js` |
+| Dragging in the library (what can be picked up and dropped on, how a drag starts on a mouse and a finger, the copy, the marks, scrolling) | `src/lib/useLibraryDrag.js`, `src/lib/dragDrop.js`, `src/components/DropTray.jsx`, the data attributes on `BookCard.jsx` and `FolderTile.jsx`, and the `[data-drag-id]`, `.drag-ghost` and `[data-drop-*]` rules in `src/index.css` |
 | Library folders: storing, syncing and the actions (create, rename, delete, move) | `src/contexts/FolderProvider.jsx`, `src/lib/db.js` (stores `folders` and `placements`), `supabase-folders.sql` |
 | The Library page: folder view, search, select, dialogs | `src/pages/Collection.jsx`, `src/components/FolderTile.jsx`, `FolderPicker.jsx`, `FolderNameDialog.jsx`, `ConfirmDialog.jsx`, `Modal.jsx`, `ActionMenu.jsx` |
 | Library and shelf ordering (most recently added or read first) | `src/lib/recency.js`, used by `Collection.jsx` and `Home.jsx` |

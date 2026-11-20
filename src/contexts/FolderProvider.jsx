@@ -5,7 +5,7 @@ import { useLibrary } from './LibraryContext'
 import { FoldersContext } from './foldersContext'
 import * as localdb from '../lib/db'
 import { nextSaveTime } from '../lib/progressMerge'
-import { cleanFolderName, positionAfterLast, mergeRemoteFolders, mergeRemotePlacements } from '../lib/folders'
+import { cleanFolderName, positionAfterLast, planReorder, mergeRemoteFolders, mergeRemotePlacements } from '../lib/folders'
 
 // The library's folders, and which folder each book is in (rules in src/lib/folders.js).
 //
@@ -250,9 +250,22 @@ export default function FolderProvider({ children }) {
     return changed.length
   }, [commit])
 
+  // Puts a folder just before or after another (where: 'before' | 'after'). Usually only the
+  // moved folder changes. Returns false if nothing changed.
+  const reorderFolder = useCallback(async (id, targetId, where) => {
+    const plan = planReorder(foldersRef.current, id, targetId, where)
+    if (!plan) return false
+    const changed = plan.map(({ id: folderId, position }) => {
+      const folder = foldersRef.current[folderId]
+      return { ...folder, position, updatedAt: nextSaveTime(folder), dirty: true }
+    })
+    await commit(changed, [])
+    return true
+  }, [commit])
+
   const value = useMemo(
-    () => ({ folders, placements, loaded, createFolder, renameFolder, deleteFolder, moveBooks }),
-    [folders, placements, loaded, createFolder, renameFolder, deleteFolder, moveBooks],
+    () => ({ folders, placements, loaded, createFolder, renameFolder, deleteFolder, moveBooks, reorderFolder }),
+    [folders, placements, loaded, createFolder, renameFolder, deleteFolder, moveBooks, reorderFolder],
   )
   return <FoldersContext.Provider value={value}>{children}</FoldersContext.Provider>
 }

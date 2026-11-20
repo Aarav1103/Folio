@@ -50,6 +50,27 @@ export function needsRenumbering(folderMap) {
   return false
 }
 
+// Moving one folder next to another (where: 'before' or 'after' the target). Returns the folders
+// whose position changes, [{ id, position }]: just the one that moved, with a position between
+// its new neighbours, or null if nothing would change (it is already there, or a folder is
+// unknown). If the neighbours have become too close to tell apart, every folder gets a fresh
+// whole position instead.
+export function planReorder(folderMap, id, targetId, where) {
+  const live = liveFolders(folderMap)
+  const moved = live.find((f) => f.id === id)
+  if (!moved || id === targetId || !live.some((f) => f.id === targetId)) return null
+  const others = live.filter((f) => f.id !== id)
+  const at = others.findIndex((f) => f.id === targetId) + (where === 'after' ? 1 : 0)
+  const order = [...others.slice(0, at), moved, ...others.slice(at)]
+  if (order.every((f, i) => f.id === live[i].id)) return null
+  const before = at > 0 ? order[at - 1].position : null
+  const after = at < order.length - 1 ? order[at + 1].position : null
+  const position = positionBetween(before, after)
+  const candidate = Object.fromEntries(order.map((f) => [f.id, f.id === id ? { ...f, position } : f]))
+  if (!needsRenumbering(candidate)) return [{ id, position }]
+  return order.map((f, i) => ({ id: f.id, position: i + 1 })).filter((c) => c.position !== candidate[c.id].position || c.id === id)
+}
+
 // The newest change wins. A change from the account replaces ours only if it is newer
 // (a tie keeps ours), and it keeps the time it was made with, never "now": clocks differ
 // between devices, and re-stamping it would make it look newer than later changes.
