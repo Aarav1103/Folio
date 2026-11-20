@@ -2,6 +2,7 @@ import { Suspense, lazy } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { LibraryProvider } from './contexts/LibraryContext'
+import ImportProvider from './contexts/ImportProvider'
 import NavShell from './components/NavShell'
 import UpdatePrompt from './components/UpdatePrompt'
 
@@ -94,8 +95,10 @@ export default function App() {
     <BrowserRouter>
       <AuthProvider>
         <LibraryProvider>
-          <AppRoutes />
-          <UpdatePrompt />
+          <ImportProvider>
+            <AppRoutes />
+            <UpdatePrompt />
+          </ImportProvider>
         </LibraryProvider>
       </AuthProvider>
     </BrowserRouter>

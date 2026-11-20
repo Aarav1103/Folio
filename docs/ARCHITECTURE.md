@@ -167,6 +167,8 @@ src/
     archive.js            Internet Archive client, lazy epub lookup, vetting of results
     googlebooks.js        Google Books client (free epubs only), vetting of results
     importEpub.js         Reads a local .epub file into a book + stored file
+    fileKinds.js          Tells an .epub from a .pdf by name or type (a shared file can arrive without an extension)
+    sharedFiles.js        Takes the files another app shared to Folio out of the cache the service worker put them in
     cloudFiles.js         Upload, download, list and delete a book's file in Supabase Storage
     recency.js            Library and shelf order: most recently added or read first
     readerPrefs.js        Saves and checks the reader's theme, text size, text width and reading hand on this device
@@ -183,10 +185,14 @@ src/
   contexts/
     AuthContext.jsx       Current user, sign in/up/out, Google sign-in
     LibraryContext.jsx    Collection, progress, online state, all sync logic
+    ImportProvider.jsx    The app-wide book importer: the Import button, dropped files and shared files all go through it
+    importContext.js      The importer's context and useImport hook (a file of its own so the provider file exports only a component)
   components/
     NavShell.jsx          Desktop sidebar, mobile bottom nav, and the slim icon rail for a phone held sideways
     BookCard.jsx          Cover tile; size="grid" fills its box (a grid column, or the fixed-width wrapper in Home's Currently reading row)
-    ImportEpubButton.jsx  File picker for .epub and .pdf, results, resume of stopped scans
+    ImportEpubButton.jsx  The Import button (file picker) and the list of stopped scans that can be resumed
+    ImportStatus.jsx      The one place that shows "Importing...", what was added, and what failed
+    DropZone.jsx          Files dropped anywhere on the window: the "Drop to add" banner and the import
     WidthIcon.jsx         The pictures on the reader's text width buttons
     UpdatePrompt.jsx      "New version ready" banner and the periodic check for updates
     PdfImportDialog.jsx   Dialog for one PDF: analysis, scan question, progress, cancel
@@ -408,8 +414,17 @@ Known limits: front and back matter count as part of the book, so the percentage
 **Read**
 `Reader` -> epub blob (IndexedDB, or download then store) -> parse and render (section 5.5) -> `saveProgress` after scrolling stops, and straight away when the page is hidden or the book is left.
 
+**Where imports come from.** Three things start an import, and all of them call `importFiles` in `ImportProvider.jsx`, so they behave the same on every page:
+- **The Import button** (Home and Library).
+- **Dropping files on the window** (`DropZone.jsx`), on a laptop or desktop, on any page except a book that is open, and without pressing Import first. While files are dragged over the window a banner says "Drop to add to your library". Only drags that carry files are taken over (text and links are left to the browser), and every file drop is cancelled even where nothing is imported (signed out, or reading), because otherwise the browser would open the file and leave the app. The banner is hidden when the drag leaves through the edge of the window, and by a one-second timer if the drag events stop arriving, so it cannot stay stuck. Signed out, a drop says "Sign in to add books to your library."
+- **Files shared to the installed app from another app** (a phone's Share menu): see below.
+
+`importFiles` handles files one after another, each on its own so one bad file does not stop the rest. Files that arrive while an import is running (another drop, or a share) join the same run. A file that is not an .epub or .pdf (by name, or by type if the name has no extension) is refused with a message without being read. A shared file with no extension gets one added before importing, because the importers go by the name. A PDF opens `PdfImportDialog` (a modal, so it shows over whichever page is open). `ImportStatus` shows "Importing <name>..." while it works, then "Added N books to your library." and any failures; success goes away after 8 seconds and a failure stays until dismissed.
+
+**Share to Folio (a phone).** Android has no way for an installed web app to be the program that opens an .epub when it is tapped in a file manager (the manifest's `file_handlers` works on desktop browsers only). What does work is the Share menu: the manifest has a `share_target` (`POST /share-target`, files named `books`, types epub and pdf), which makes the installed app appear when an .epub or .pdf is shared. `public/share-target-sw.js`, pulled into the generated service worker with `importScripts`, answers that POST: it puts the files in the cache `folio-shared-files` (the name in a header) and redirects (303) to `/?shared=<count>`. When the app is signed in and the library has loaded (so a book added too early cannot be lost when the library loads), and again whenever the app comes back into view, `ImportProvider` takes the files out of the cache (`sharedFiles.js`, each file once), goes to the Library and imports them. Signed out, they stay in the cache until the person signs in. `?shared=error` (the worker could not read the form) shows a message and the address is cleaned up. A change to `share_target` reaches an already installed Android app only when Chrome next updates the installed app (about once a day, or remove it and install again), as with the orientation setting. iPhones support neither file handling nor share targets for web apps.
+
 **Import an epub**
-`ImportEpubButton` -> `importEpub.js`:
+`ImportEpubButton` / drop / share -> `ImportProvider.importFiles` -> `importEpub.js`:
 1. Reject non-`.epub` names and files that are not zip archives.
 2. Parse with epub.js (with a 30 second guard against hangs), read title, author and cover.
 3. Reject Adobe-DRM files (presence of `META-INF/rights.xml`).
@@ -427,7 +442,7 @@ The id depends only on the file contents, so importing the same file on another 
 6. If the file is on neither the device nor the account, or the device is offline, the Reader says which, and what to do.
 
 **Import a PDF**
-`ImportEpubButton` -> `PdfImportDialog` -> `importPdf.js` -> `pdf/convert.js`:
+`ImportProvider.importFiles` -> `PdfImportDialog` -> `importPdf.js` -> `pdf/convert.js`:
 1. Check it is a PDF and not password protected, then read the text of every page to see which are scans.
 2. If it is mostly scans, ask the user to confirm and choose a language (with a time estimate). A normal PDF converts straight away.
 3. Convert page by page (section 5.8) with a progress bar and a Stop button, saving each recognised page.
@@ -486,7 +501,7 @@ If they are missing, `supabase.js` falls back to placeholder values, so the app 
 
 **Deploy:** import the repo into Vercel and set the two environment variables. Vercel serves `dist/` and deploys `api/fetch-book.js` as a function. Installing to the home screen from the deployed URL is what enables the offline app shell.
 
-**PWA:** name "Folio", theme color `#2D6A5E`, standalone display, any orientation, icons at 192 and 512 px.
+**PWA:** name "Folio", theme color `#2D6A5E`, standalone display, any orientation, icons at 192 and 512 px, and a share target for .epub and .pdf files (section 7).
 
 **Database setup:** run `supabase-schema.sql` once in the Supabase SQL editor. Run `supabase-storage.sql` too if you want imported books to open on all your devices. Without it everything else works, imported books just stay on one device, and uploads fail quietly. It is not a migration system, and the `create policy` statements are not safe to run twice.
 
@@ -516,7 +531,8 @@ These come from reading the code. They have not been exploited or load-tested.
 10. **Text recognition depends on a public CDN** for its engine files the first time it is used. Offline use afterwards relies on caching that has not been tested in a real browser.
 11. **Landscape mode was tested only in an emulated browser.** The width rules, panel, icon rail and rotation keeping your place were tested in Chromium with a touch phone viewport and a resized window, and the notch padding with its safe-area emulation. Nothing was tried on a real phone, where the exact rotation timing, the address bar and a real notch can differ. A very quick rotation straight after a scroll (within about 150 ms, or during a fling) puts the text back to the spot from the scroll before.
 12. **Following the account while a book is open was tested with stand-ins.** The phone-reads, laptop-reads, phone-returns case (and slow, offline and "already reading" variants) was tested with two emulated browsers sharing a fake account, with the app's own "hidden" and "visible" signals sent by the test. Nothing was tried on real devices, where the exact order of events when a phone wakes (visibility, focus, network coming back) may differ. If two devices are read at the same moment the one scrolled last wins, which is by design. The check that the reader's own saves are not mistaken for another device's has no test of its own: removing it changes nothing a user could see in ordinary use.
-13. **Housekeeping.** The `/api/gutenberg` and `/api/archive` rewrites are unused. The README still describes an epub.js rendition and does not mention the Internet Archive or importing. Progress percentage accuracy was checked on one real epub only (section 6.2).
+13. **Dropping and sharing files was tested with stand-ins.** Dropped files were simulated with browser drag events carrying files, and a share was simulated with the same kind of form post a phone's Share menu makes, sent through the real service worker. Nothing was tried with a real file manager or share sheet. Android lists an app in the Share menu by file type: a file manager that labels an .epub as a generic file (not `application/epub+zip`) will not offer Folio, and the fix would be to accept generic types too, at the cost of Folio appearing for every kind of file. A very large shared PDF is read into memory by the worker.
+14. **Housekeeping.** The `/api/gutenberg` and `/api/archive` rewrites are unused. The README still describes an epub.js rendition and does not mention the Internet Archive or importing. Progress percentage accuracy was checked on one real epub only (section 6.2).
 
 ---
 
@@ -533,7 +549,9 @@ These come from reading the code. They have not been exploited or load-tested.
 | How and when progress and the library sync between devices (polling, queue, merge rules) | `src/contexts/LibraryContext.jsx`, `src/lib/progressMerge.js`, the queue helpers in `src/lib/db.js`, `keepalive` in `src/lib/supabase.js`, the save-on-leaving logic in `src/pages/Reader.jsx` |
 | Library and shelf ordering (most recently added or read first) | `src/lib/recency.js`, used by `Collection.jsx` and `Home.jsx` |
 | Update banner, build stamp | `src/components/UpdatePrompt.jsx`, `registerType` and `define` in `vite.config.js`, `Account.jsx` |
-| Importing epub files | `src/lib/importEpub.js` and `src/components/ImportEpubButton.jsx` |
+| Importing epub files | `src/lib/importEpub.js` and `src/contexts/ImportProvider.jsx` |
+| Where imports start and what they report (button, dropped files, shared files, the status message) | `src/contexts/ImportProvider.jsx`, `src/components/DropZone.jsx`, `src/components/ImportStatus.jsx`, `src/components/ImportEpubButton.jsx` |
+| Sharing files to the installed app (Android Share menu) | `share_target` in `vite.config.js`, `public/share-target-sw.js`, `src/lib/sharedFiles.js` |
 | Google Books source | `src/lib/googlebooks.js`, and the download-first step in `src/pages/BookDetail.jsx` |
 | PDF import: paragraph rules, chapters | `src/lib/pdf/layout.js` |
 | PDF import: per-page flow, figures, scans | `src/lib/pdf/convert.js`, `render.js`, `ocr.js` |

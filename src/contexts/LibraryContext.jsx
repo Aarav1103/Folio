@@ -88,6 +88,7 @@ export function LibraryProvider({ children }) {
   // for imported books: 'synced' (a copy is in the account), 'too_large', or absent if not known yet
   const [cloudFiles, setCloudFiles] = useState({})
   const initialized = useRef(false) // this device's own data has been loaded
+  const [ready, setReady] = useState(false) // the same, as state: code that adds books waits for it
   const collectionRef = useRef([])
   const progressRef = useRef({})
   const lastFullRefreshRef = useRef(0)
@@ -333,6 +334,7 @@ export function LibraryProvider({ children }) {
       setProgressMap(pMap)
       progressRef.current = pMap
       initialized.current = true
+      setReady(true)
 
       if (isAuthenticated && isOnline) {
         lastFullRefreshRef.current = Date.now()
@@ -512,6 +514,7 @@ export function LibraryProvider({ children }) {
   )
 
   const value = {
+    ready,
     collection,
     progressMap,
     isOnline,
