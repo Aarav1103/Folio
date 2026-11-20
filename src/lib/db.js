@@ -5,7 +5,7 @@ import { openDB } from 'idb'
 // progress and collection data so the app works with no network at all.
 
 const DB_NAME = 'folio-db'
-const DB_VERSION = 2
+const DB_VERSION = 3
 
 let dbPromise = null
 
@@ -31,6 +31,13 @@ function getDB() {
         }
         if (!db.objectStoreNames.contains('ocrPages')) {
           db.createObjectStore('ocrPages', { keyPath: ['jobId', 'page'] })
+        }
+        // version 3: library folders, and which folder each book is in
+        if (!db.objectStoreNames.contains('folders')) {
+          db.createObjectStore('folders', { keyPath: 'id' })
+        }
+        if (!db.objectStoreNames.contains('placements')) {
+          db.createObjectStore('placements', { keyPath: 'bookId' })
         }
       },
     })
@@ -101,6 +108,34 @@ export async function getProgressLocal(bookId) {
 export async function getAllProgressLocal() {
   const db = await getDB()
   return db.getAll('progress')
+}
+
+// --- Library folders (local-first, synced to Supabase when online) ---
+// A folder is { id, name, position, deleted, updatedAt, dirty } and a placement (which
+// folder a book is in) is { bookId, folderId, updatedAt, dirty }. `dirty` means "changed
+// here and not yet sent to the account"; see src/contexts/FolderProvider.jsx.
+export async function getAllFolders() {
+  const db = await getDB()
+  return db.getAll('folders')
+}
+
+export async function putFolders(folders) {
+  const db = await getDB()
+  const tx = db.transaction('folders', 'readwrite')
+  for (const folder of folders) tx.store.put(folder)
+  return tx.done
+}
+
+export async function getAllPlacements() {
+  const db = await getDB()
+  return db.getAll('placements')
+}
+
+export async function putPlacements(placements) {
+  const db = await getDB()
+  const tx = db.transaction('placements', 'readwrite')
+  for (const placement of placements) tx.store.put(placement)
+  return tx.done
 }
 
 // --- Pending sync queue, for changes made while offline ---

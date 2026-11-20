@@ -70,6 +70,7 @@ Three things to keep in mind:
 | Epub file of an imported book (an epub, or a converted PDF) | IndexedDB, store `files`, **and** a copy in Supabase Storage, bucket `books` | Yes, other devices download it the first time they open the book |
 | Book metadata (title, author, cover, source ids) | IndexedDB `books` **and** Supabase `collection_items` | Yes |
 | Reading progress | IndexedDB `progress` **and** Supabase `reading_progress` | Yes |
+| Library folders (name, order) and which folder each book is in | IndexedDB `folders` and `placements` **and** Supabase `folders` and `book_folders` | Yes |
 | Changes made offline, or that failed to send | IndexedDB `pendingSync` (a queue, one progress entry per book) | No, sent at the next start, return to the app, poll or reconnect |
 | A scanned PDF being converted (the PDF and each recognised page) | IndexedDB `pdfJobs` and `ocrPages`, until the book is made | No, per device |
 | Sign-in session | `localStorage`, managed by the Supabase client | n/a |
@@ -90,7 +91,7 @@ A React 19 single-page app (React Router 7, Tailwind 3, lucide icons), bundled b
 
 ### 3.2 Storage on the device
 
-**IndexedDB database `folio-db` (version 2)**, wrapped by `src/lib/db.js`:
+**IndexedDB database `folio-db` (version 3)**, wrapped by `src/lib/db.js`:
 
 | Store | Key | Holds |
 |---|---|---|
@@ -100,6 +101,8 @@ A React 19 single-page app (React Router 7, Tailwind 3, lucide icons), bundled b
 | `pendingSync` | auto-increment `id` | Queued operations: `add_book`, `remove_book`, `progress` |
 | `pdfJobs` | `id` | A scanned PDF being converted: `{ id, fileName, language, pageCount, blob (the PDF), createdAt }`. Removed when the book is made (added in version 2) |
 | `ocrPages` | `[jobId, page]` | One recognised page: `{ jobId, page, lines, figures }` (added in version 2) |
+| `folders` | `id` | A library folder (see section 6.4; added in version 3) |
+| `placements` | `bookId` | Which folder a book is in (see section 6.4; added in version 3) |
 
 The database name is fixed and records are not scoped to a user (see section 10).
 
@@ -133,6 +136,7 @@ Supabase provides accounts and the two sync tables. The browser talks to it dire
 - **Tables** (`supabase-schema.sql`, run by hand in the SQL editor):
   - `collection_items`: `user_id`, `book_id`, `title`, `author`, `cover`, `source`, `source_id`, `epub_url`, `text_url`, `created_at`. Unique on `(user_id, book_id)`.
   - `reading_progress`: `user_id`, `book_id`, `location`, `percentage`, `updated_at`. Unique on `(user_id, book_id)`.
+  - `folders` and `book_folders` (`supabase-folders.sql`, run by hand, see section 8): the library's folders and which folder each book is in.
   - Each table has one policy: `for all using (auth.uid() = user_id) with check (auth.uid() = user_id)`, plus an index on `user_id`. Rows are deleted with the user (`on delete cascade`).
 - **Storage** (`supabase-storage.sql`, run by hand): a private bucket `books` that accepts only `application/epub+zip`, up to 50 MB per file. Files are at `<user id>/<book id>.epub`. Four policies (read, add, replace, delete) allow a signed-in user to touch only the folder named with their own user id. On the free plan, storage is 1 GB in total and 50 MB per file (check Supabase's pricing page for current figures). Nothing in the app needs a database column for this: which books have a stored copy is found by listing the user's folder.
 
@@ -161,7 +165,8 @@ src/
   index.css               Tailwind layers, font import, helper classes, custom scrollbar (laptops and desktops only)
   lib/
     supabase.js           Supabase client (reads VITE_ env vars)
-    db.js                 IndexedDB wrapper (books, files, progress, pendingSync)
+    db.js                 IndexedDB wrapper (books, files, progress, pendingSync, folders, placements, PDF jobs)
+    folders.js            Rules for library folders: names, order, combining changes from two devices, the library's layout
     progressMerge.js      Rules for combining progress from two devices and for stamping a new save later than the one it replaces
     gutendex.js           Gutendex client, book mapping, fetchBookContent()
     archive.js            Internet Archive client, lazy epub lookup, vetting of results
@@ -185,11 +190,19 @@ src/
   contexts/
     AuthContext.jsx       Current user, sign in/up/out, Google sign-in
     LibraryContext.jsx    Collection, progress, online state, all sync logic
+    FolderProvider.jsx    Library folders on this device and their sync with the account
+    foldersContext.js     The folders context and useFolders hook (a file of its own so the provider file exports only a component)
     ImportProvider.jsx    The app-wide book importer: the Import button, dropped files and shared files all go through it
     importContext.js      The importer's context and useImport hook (a file of its own so the provider file exports only a component)
   components/
     NavShell.jsx          Desktop sidebar, mobile bottom nav, and the slim icon rail for a phone held sideways
     BookCard.jsx          Cover tile; size="grid" fills its box (a grid column, or the fixed-width wrapper in Home's Currently reading row)
+    FolderTile.jsx        A folder in the library grid (four covers, name, count)
+    FolderPicker.jsx      "Move to folder": choose a folder, make a new one, or take books out
+    FolderNameDialog.jsx  Asks for a folder's name (new, rename)
+    ConfirmDialog.jsx     "Are you sure" before deleting a folder
+    Modal.jsx             The dialog frame the three above share
+    ActionMenu.jsx        The small "..." button and list on a book or folder, kept on the screen
     ImportEpubButton.jsx  The Import button (file picker) and the list of stopped scans that can be resumed
     ImportStatus.jsx      The one place that shows "Importing...", what was added, and what failed
     DropZone.jsx          Files dropped anywhere on the window: the blurred "Drop to add" screen and the import
@@ -201,13 +214,14 @@ src/
     Login.jsx             Sign in / create account / Google
     Home.jsx              "Your shelf": currently reading (the most recently read book drawn larger) + collection (most recent first)
     Discover.jsx          Search, topics, merged results from both sources
-    Collection.jsx        Library, most recently added or read first, with local search and import button
+    Collection.jsx        Library: folders, then books in no folder (most recently added or read first); folder view, search, select, move; import button
     BookDetail.jsx        One book: add, read, download for offline
     Reader.jsx            The reading view
     Account.jsx           Account info, connection state, sign out
 public/                   Favicon and PWA icons
 supabase-schema.sql       Tables, row level security, indexes (run by hand)
 supabase-storage.sql      Private storage bucket and per-user rules for imported books (run by hand, optional)
+supabase-folders.sql      Tables for library folders and their per-user rules (run by hand, optional: without it folders stay on one device)
 vercel.json               Rewrites
 vite.config.js            Vite, React plugin, PWA manifest and cache rules
 tailwind.config.js        Design tokens (colors, fonts)
@@ -389,6 +403,17 @@ Progress saved by older versions has no `fraction`. The reader works the positio
 
 Known limits: front and back matter count as part of the book, so the percentage can stop a few points short when the story ends if licence or "also by" pages follow it (expected for Project Gutenberg books, which end with a licence text; not measured on one, none was available offline); the percentage shown while scrolling inside a chapter follows the chapter's scroll height, so a chapter that is mostly pictures moves it by height, not by words.
 
+### 6.4 Folders
+
+```
+folder     { id, name, position, deleted, updatedAt, dirty }       IndexedDB `folders`, Supabase `folders`
+placement  { bookId, folderId, updatedAt, dirty }                  IndexedDB `placements`, Supabase `book_folders`
+```
+- A folder's `id` is made on the device that creates it (a random UUID). `position` is a number that sets the folder order (new folders go after the last; a fraction between two neighbours is used when one is moved between them, so moving never changes the others). `deleted` marks a folder as deleted without removing the row, so other devices learn of it.
+- A placement says which folder a book is in. `folderId` null means it is in no folder. A placement naming a folder that is deleted or unknown counts as "in no folder". A book is in at most one folder, and folders hold books only (no folders inside folders).
+- `updatedAt` is when the row was last changed; `dirty` means changed here and not yet accepted by the account. The newest change wins when two devices disagree (`mergeRemoteFolders` and `mergeRemotePlacements` in `src/lib/folders.js`); a change from the account keeps the time it was made with, and a new change is stamped later than the one it replaces (`nextSaveTime`, the same rule as reading progress), so a device whose clock is behind still wins when it changes something later.
+- Books in a folder are sorted by recency, like the library. The library shows the folders (in their order), then the books that are in no folder.
+
 ### 6.3 Offline queue entries
 
 ```
@@ -483,6 +508,11 @@ All of this is in `LibraryContext.jsx`.
 
 **Errors:** the Supabase client returns a failed request as an `{error}` value instead of throwing it. Every write is checked for it (`raise`); before this, a failed progress save, "add book" or queued entry looked like it had worked and was never retried. A failed "add book" could also make the book disappear at the next refresh, because a local book the account does not have is treated as removed elsewhere.
 
+**Folders** (`FolderProvider.jsx`) are separate from the sync above and follow the same local-first idea:
+- A change (new folder, rename, delete, move books) is applied in memory and saved to IndexedDB at once, marked `dirty`, and then sent. Sending (`push`) upserts every dirty row and marks it clean only after the account has accepted it, and only if it has not been changed again meanwhile; a change made while a send is under way is picked up by another round straight after. So nothing is lost if the connection drops or the tables are missing: folders keep working on the device and are sent later.
+- Taking in other devices' changes (`pull`) reads both tables and merges by time (section 6.4). **It runs before pushing**, at each round (when the app starts, every 30 seconds while it is in view, when it comes back into view, when the window gets focus and when the connection returns): a change made here while offline then gives way to a later one made elsewhere, instead of being sent over it. A deleted folder arrives as a row marked deleted; its books show in the library again.
+- If the tables do not exist (`supabase-folders.sql` not run), the errors are logged once and folders stay on this device.
+
 **Imported files** follow the same local-first idea: the file is saved on the device first, then copied to the account when possible (see the flow in section 7). They are not merged or compared, a stored copy is simply replaced when the same book is added again.
 
 **Flushing:** each queued entry is replayed (upserts for adds and progress, a delete for removals, an upload for `upload_file`). An entry is removed only once the account has accepted it; one that fails stays queued and is retried at the next start, return to the app, poll or reconnect.
@@ -506,6 +536,8 @@ If they are missing, `supabase.js` falls back to placeholder values, so the app 
 **PWA:** name "Folio", theme color `#2D6A5E`, standalone display, any orientation, icons at 192 and 512 px, and a share target for .epub and .pdf files (section 7).
 
 **Database setup:** run `supabase-schema.sql` once in the Supabase SQL editor. Run `supabase-storage.sql` too if you want imported books to open on all your devices. Without it everything else works, imported books just stay on one device, and uploads fail quietly. It is not a migration system, and the `create policy` statements are not safe to run twice.
+
+**Folders setup:** run `supabase-folders.sql` once in the SQL editor (safe to run again) for folders to be the same on all your devices. Without it folders work on the device they were made on. (It creates two tables, `folders` and `book_folders`, each with the same one-policy rule as the other tables.)
 
 **Quality tooling:** ESLint is configured and currently reports 15 problems that predate recent changes. There are no automated tests and no CI.
 
@@ -534,7 +566,8 @@ These come from reading the code. They have not been exploited or load-tested.
 11. **Landscape mode was tested only in an emulated browser.** The width rules, panel, icon rail and rotation keeping your place were tested in Chromium with a touch phone viewport and a resized window, and the notch padding with its safe-area emulation. Nothing was tried on a real phone, where the exact rotation timing, the address bar and a real notch can differ. A very quick rotation straight after a scroll (within about 150 ms, or during a fling) puts the text back to the spot from the scroll before.
 12. **Following the account while a book is open was tested with stand-ins.** The phone-reads, laptop-reads, phone-returns case (and slow, offline and "already reading" variants) was tested with two emulated browsers sharing a fake account, with the app's own "hidden" and "visible" signals sent by the test. Nothing was tried on real devices, where the exact order of events when a phone wakes (visibility, focus, network coming back) may differ. If two devices are read at the same moment the one scrolled last wins, which is by design. The check that the reader's own saves are not mistaken for another device's has no test of its own: removing it changes nothing a user could see in ordinary use.
 13. **Dropping and sharing files was tested with stand-ins.** Dropped files were simulated with browser drag events carrying files, and a share was simulated with the same kind of form post a phone's Share menu makes, sent through the real service worker. Nothing was tried with a real file manager or share sheet. Android lists an app in the Share menu by file type: a file manager that labels an .epub as a generic file (not `application/epub+zip`) will not offer Folio, and the fix would be to accept generic types too, at the cost of Folio appearing for every kind of file. A very large shared PDF is read into memory by the worker.
-14. **Housekeeping.** The `/api/gutenberg` and `/api/archive` rewrites are unused. The README still describes an epub.js rendition and does not mention the Internet Archive or importing. Progress percentage accuracy was checked on one real epub only (section 6.2).
+14. **Folders were tested with stand-ins.** Everything was tested in an emulated browser against a fake account, including two devices sharing it, going offline and the tables missing. Nothing was tried on real devices. The two tables were created in the live project with `supabase-folders.sql` and the security advisor reports nothing about them, but no real row was written. Folders are not scoped per user on a shared device (like everything in IndexedDB, risk 3). A book removed from the library keeps its placement row (it is ignored, and used again if the same book is added back).
+15. **Housekeeping.** The `/api/gutenberg` and `/api/archive` rewrites are unused. The README still describes an epub.js rendition and does not mention the Internet Archive or importing. Progress percentage accuracy was checked on one real epub only (section 6.2).
 
 ---
 
@@ -549,6 +582,9 @@ These come from reading the code. They have not been exploited or load-tested.
 | Reading view, progress and resume | `src/pages/Reader.jsx` |
 | Copying imported books to the account, and fetching them on another device | `src/lib/cloudFiles.js`, the file sync in `src/contexts/LibraryContext.jsx`, `src/pages/Reader.jsx` and `src/pages/BookDetail.jsx` |
 | How and when progress and the library sync between devices (polling, queue, merge rules) | `src/contexts/LibraryContext.jsx`, `src/lib/progressMerge.js`, the queue helpers in `src/lib/db.js`, `keepalive` in `src/lib/supabase.js`, the save-on-leaving logic in `src/pages/Reader.jsx` |
+| Library folders: the rules (names, order, merging, layout) | `src/lib/folders.js` |
+| Library folders: storing, syncing and the actions (create, rename, delete, move) | `src/contexts/FolderProvider.jsx`, `src/lib/db.js` (stores `folders` and `placements`), `supabase-folders.sql` |
+| The Library page: folder view, search, select, dialogs | `src/pages/Collection.jsx`, `src/components/FolderTile.jsx`, `FolderPicker.jsx`, `FolderNameDialog.jsx`, `ConfirmDialog.jsx`, `Modal.jsx`, `ActionMenu.jsx` |
 | Library and shelf ordering (most recently added or read first) | `src/lib/recency.js`, used by `Collection.jsx` and `Home.jsx` |
 | Update banner, build stamp | `src/components/UpdatePrompt.jsx`, `registerType` and `define` in `vite.config.js`, `Account.jsx` |
 | Importing epub files | `src/lib/importEpub.js` and `src/contexts/ImportProvider.jsx` |
