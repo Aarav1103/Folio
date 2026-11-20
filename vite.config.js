@@ -32,12 +32,27 @@ export default defineConfig({
         display: 'standalone',
         orientation: 'any', // portrait or landscape, whichever the phone is held in
         start_url: '/',
+        // Lets an installed Folio appear in a phone's Share menu for book files (an .epub
+        // or .pdf in the file manager, say). The files are received by public/share-target-sw.js
+        // and imported by the app (src/lib/sharedFiles.js, src/contexts/ImportProvider.jsx).
+        share_target: {
+          action: '/share-target',
+          method: 'POST',
+          enctype: 'multipart/form-data',
+          params: {
+            files: [
+              { name: 'books', accept: ['application/epub+zip', '.epub', 'application/pdf', '.pdf'] },
+            ],
+          },
+        },
         icons: [
           { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
         ],
       },
       workbox: {
+        // Receives files shared to the app (see share_target above)
+        importScripts: ['share-target-sw.js'],
         // PDF import (pdf.js and the converter) is large and rarely used, so
         // it is not part of the install download. It is cached the first
         // time a PDF is imported instead (see the rules below).
