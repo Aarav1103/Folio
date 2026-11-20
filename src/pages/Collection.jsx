@@ -8,9 +8,12 @@ import FolderTile from '../components/FolderTile'
 import FolderNameDialog from '../components/FolderNameDialog'
 import FolderPicker from '../components/FolderPicker'
 import ConfirmDialog from '../components/ConfirmDialog'
+import DropTray from '../components/DropTray'
 import ImportEpubButton from '../components/ImportEpubButton'
 import { buildLayout, folderOfBook } from '../lib/folders'
 import { sortByRecency } from '../lib/recency'
+import { booksToDrag } from '../lib/dragDrop'
+import { useLibraryDrag } from '../lib/useLibraryDrag'
 
 const GRID = 'grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-5'
 
@@ -19,7 +22,7 @@ const GRID = 'grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-5'
 // moved with the "..." menu on a book, or with Select to move several at once.
 export default function Collection() {
   const { collection, progressMap } = useLibrary()
-  const { folders, placements, createFolder, renameFolder, deleteFolder, moveBooks } = useFolders()
+  const { folders, placements, createFolder, renameFolder, deleteFolder, moveBooks, reorderFolder } = useFolders()
   const [params, setParams] = useSearchParams()
   const [query, setQuery] = useState('')
   const [selecting, setSelecting] = useState(false)
@@ -69,6 +72,17 @@ export default function Collection() {
     { label: 'Delete folder', danger: true, onSelect: () => setDialog({ type: 'delete', folder }) },
   ]
 
+  // Dragging: a book onto a folder (or, inside a folder, onto "your library" or another folder at
+  // the top of the screen), and a folder next to another to put it in a new place.
+  const { dragging } = useLibraryDrag({
+    enabled: () => !dialog,
+    booksFor: (id) => booksToDrag(id, selected),
+    canReorder: () => !q && !openFolder,
+    // selecting ends when the books moved were the selected ones; dragging some other book leaves the selection alone
+    onDropBooks: (ids, targetFolderId) => { moveBooks(ids, targetFolderId); if (selecting && ids.some((id) => selected.has(id))) stopSelecting() },
+    onReorderFolder: (id, targetId, where) => reorderFolder(id, targetId, where),
+  })
+
   const empty = view.folders.length === 0 && view.books.length === 0
   const emptyText = q
     ? 'No matches found.'
@@ -81,7 +95,7 @@ export default function Collection() {
       <div className="flex items-start justify-between gap-4 mb-6">
         <div className="min-w-0">
           {openFolder && (
-            <button onClick={() => open(null)} className="flex items-center gap-1.5 text-sm text-ink-muted hover:text-ink transition-colors mb-2">
+            <button onClick={() => open(null)} data-drop-root className="flex items-center gap-1.5 text-sm text-ink-muted hover:text-ink transition-colors mb-2 rounded-md">
               <ArrowLeft size={15} /> Your library
             </button>
           )}
@@ -150,6 +164,10 @@ export default function Collection() {
             )
           })}
         </div>
+      )}
+
+      {dragging && dragging.kind === 'book' && openFolder && (
+        <DropTray folders={layout.folders.filter((f) => f.id !== openFolder.id)} />
       )}
 
       {selecting && (

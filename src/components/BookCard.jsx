@@ -32,6 +32,7 @@ const dims = {
             alt={book.title}
             className="w-full aspect-[2/3] object-cover"
             loading="lazy"
+            draggable={false}
           />
         ) : (
           <div className="w-full aspect-[2/3] flex items-center justify-center bg-gradient-to-br from-teal-100 to-parchment p-3">
@@ -75,7 +76,7 @@ const dims = {
   // Everywhere else a card is just the button, as it always was
   if (!menuItems && !selectMode) return card
   return (
-    <div className="group/card relative min-w-0 w-full">
+    <div className="group/card relative min-w-0 w-full" data-drag-kind="book" data-drag-id={book.id}>
       {card}
       {!selectMode && menuItems && (
         <ActionMenu label={`Options for ${book.title}`} items={menuItems} className="absolute right-1.5 top-1.5" />
