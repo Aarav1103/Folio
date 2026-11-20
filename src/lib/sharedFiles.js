@@ -4,6 +4,9 @@
 const SHARED_CACHE = 'folio-shared-files'
 
 let inFlight = null
+// Entries already handed out in this page's life. If removing one from the cache ever
+// failed, it would otherwise be taken and imported again on every check, without end.
+const handedOut = new Set()
 
 // Returns the waiting files as File objects, oldest first (an empty list if there are
 // none, or if the browser has no cache storage). Never throws.
@@ -17,8 +20,10 @@ export function takeSharedFiles() {
       const requests = (await cache.keys()).sort((a, b) => a.url.localeCompare(b.url))
       const files = []
       for (const request of requests) {
+        if (handedOut.has(request.url)) continue
         const response = await cache.match(request)
         if (!response) continue
+        handedOut.add(request.url)
         const blob = await response.blob()
         let name = 'shared-file'
         try { name = decodeURIComponent(response.headers.get('x-file-name') || name) } catch { /* keep the default */ }
