@@ -10,6 +10,7 @@ import FolderPicker from '../components/FolderPicker'
 import ConfirmDialog from '../components/ConfirmDialog'
 import ImportEpubButton from '../components/ImportEpubButton'
 import { buildLayout, folderOfBook } from '../lib/folders'
+import { sortByRecency } from '../lib/recency'
 
 const GRID = 'grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-5'
 
@@ -39,13 +40,12 @@ export default function Collection() {
     if (openFolder) return { folders: [], books: q ? openFolder.books.filter(matches) : openFolder.books }
     if (!q) return { folders: layout.folders, books: layout.loose }
     const everyBook = [...layout.loose, ...layout.folders.flatMap((f) => f.books)]
-    const hits = everyBook.filter(matches)
-    const order = new Map(collection.map((b, i) => [b.id, i]))
     return {
       folders: layout.folders.filter((f) => f.name.toLowerCase().includes(q)),
-      books: hits.sort((a, b) => order.get(a.id) - order.get(b.id)),
+      // most recent first, whichever folder a book is in
+      books: sortByRecency(everyBook.filter(matches), progressMap),
     }
-  }, [openFolder, layout, q, matches, collection])
+  }, [openFolder, layout, q, matches, progressMap])
 
   function open(id) { setQuery(''); setParams(id ? { folder: id } : {}) }
   function toggle(id) {
