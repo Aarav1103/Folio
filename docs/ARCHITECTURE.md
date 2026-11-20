@@ -192,7 +192,7 @@ src/
     BookCard.jsx          Cover tile; size="grid" fills its box (a grid column, or the fixed-width wrapper in Home's Currently reading row)
     ImportEpubButton.jsx  The Import button (file picker) and the list of stopped scans that can be resumed
     ImportStatus.jsx      The one place that shows "Importing...", what was added, and what failed
-    DropZone.jsx          Files dropped anywhere on the window: the "Drop to add" banner and the import
+    DropZone.jsx          Files dropped anywhere on the window: the blurred "Drop to add" screen and the import
     WidthIcon.jsx         The pictures on the reader's text width buttons
     UpdatePrompt.jsx      "New version ready" banner and the periodic check for updates
     PdfImportDialog.jsx   Dialog for one PDF: analysis, scan question, progress, cancel
@@ -299,6 +299,8 @@ The setting is stored once per device (`folio-reader-width`), so the same choice
 ### 5.7 Styling
 
 Tailwind 3 cannot make "current text colour at N% opacity" classes, so `bg-current/5`, `/10` and `/15` (used by the reader's controls) are written out by hand in `src/index.css` with `color-mix`. Without them those classes produce no CSS and the reader's selected option, slider track and hover circles are invisible.
+
+The drag-and-drop screen (`.drop-veil`) is the one hand-written component class in `src/index.css`, in `@layer components`.
 
 Tailwind with custom tokens in `tailwind.config.js`: `parchment`, `ink`, `ink-muted`, a teal scale, and three font families (Playfair Display for headings, Inter for UI, Lora for reading), loaded from Google Fonts by a CSS `@import`.
 
@@ -416,7 +418,7 @@ Known limits: front and back matter count as part of the book, so the percentage
 
 **Where imports come from.** Three things start an import, and all of them call `importFiles` in `ImportProvider.jsx`, so they behave the same on every page:
 - **The Import button** (Home and Library).
-- **Dropping files on the window** (`DropZone.jsx`), on a laptop or desktop, on any page except a book that is open, and without pressing Import first. While files are dragged over the window a banner says "Drop to add to your library". Only drags that carry files are taken over (text and links are left to the browser), and every file drop is cancelled even where nothing is imported (signed out, or reading), because otherwise the browser would open the file and leave the app. The banner is hidden when the drag leaves through the edge of the window, and by a one-second timer if the drag events stop arriving, so it cannot stay stuck. Signed out, a drop says "Sign in to add books to your library."
+- **Dropping files on the window** (`DropZone.jsx`), on a laptop or desktop, on any page except a book that is open, and without pressing Import first. While files are dragged over the window the whole page blurs and turns translucent parchment (`.drop-veil` in `src/index.css`: `backdrop-filter: blur(14px)` over a 55% parchment wash) with a single line, "Drop to add to your library", in the site's display serif (Playfair Display, italic). There is no box or border. It fades in and out over about 0.2 seconds, and while hidden it is `visibility: hidden`, so the blur is not drawn the rest of the time. Only drags that carry files are taken over (text and links are left to the browser), and every file drop is cancelled even where nothing is imported (signed out, or reading), because otherwise the browser would open the file and leave the app. The screen is hidden when the drag leaves through the edge of the window, and by a one-second timer if the drag events stop arriving, so it cannot stay stuck. Signed out, a drop says "Sign in to add books to your library."
 - **Files shared to the installed app from another app** (a phone's Share menu): see below.
 
 `importFiles` handles files one after another, each on its own so one bad file does not stop the rest. Files that arrive while an import is running (another drop, or a share) join the same run. A file that is not an .epub or .pdf (by name, or by type if the name has no extension) is refused with a message without being read. A shared file with no extension gets one added before importing, because the importers go by the name. A PDF opens `PdfImportDialog` (a modal, so it shows over whichever page is open). `ImportStatus` shows "Importing <name>..." while it works, then "Added N books to your library." and any failures; success goes away after 8 seconds and a failure stays until dismissed.

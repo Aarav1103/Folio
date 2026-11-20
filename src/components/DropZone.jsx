@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 
 // Files dropped anywhere on the window are added to the library, with no need to press
-// Import first. While files are being dragged over the window a banner says so.
+// Import first. While files are being dragged over the window the page behind blurs and
+// goes translucent, with one line of text (the look is the .drop-veil rules in index.css).
 //
 // Dropping a file on a web page normally makes the browser open it, leaving the app, so
 // every file drop is taken over here even where nothing is imported (signed out, or in a
@@ -65,13 +66,10 @@ export default function DropZone({ allowed, signedIn, onFiles, onRefused }) {
     }
   }, [])
 
-  if (!dragging) return null
+  // always in the page, hidden until a drag arrives, so that it can fade in and out
   return (
-    <div className="fixed inset-0 z-[60] pointer-events-none flex items-center justify-center bg-teal-600/15 p-6">
-      <div className="rounded-2xl border-2 border-dashed border-teal-600 bg-parchment px-8 py-6 text-center shadow-xl">
-        <p className="font-display text-xl text-ink">Drop to add to your library</p>
-        <p className="text-sm text-ink-muted mt-1">EPUB and PDF files</p>
-      </div>
+    <div className={`drop-veil${dragging ? ' is-on' : ''}`} aria-hidden={!dragging}>
+      <p className="font-display italic text-4xl md:text-5xl text-ink text-center">Drop to add to your library</p>
     </div>
   )
 }
