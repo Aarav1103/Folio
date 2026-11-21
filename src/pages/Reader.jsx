@@ -326,7 +326,7 @@ export default function Reader() {
   const settlingRef = useRef(false)
   const flushSaveRef = useRef(null) // saves the current position now (set by the saving code below)
   const stopRestoringRef = useRef(() => {}) // stops re-applying the saved place while images load (set when the book opens)
-  const [movedFrom, setMovedFrom] = useState(null) // where the reader was before it moved to another device's place
+  const [updatedNote, setUpdatedNote] = useState(0) // counts the moves to another device's place; 0 = no "Progress updated!" note showing
 
   useEffect(() => {
     const el = containerRef.current
@@ -683,7 +683,7 @@ export default function Reader() {
     const here = readAnchor(el)
     if (here.index === index && Math.abs(here.fraction - fraction) < 0.005) return false // already there
     stopRestoringRef.current() // do not let the place the book opened at be put back while images load
-    setMovedFrom(here)
+    setUpdatedNote((n) => n + 1)
     jumpTo(index, undefined, fraction)
     return true
   }, [id, getKnownProgress, jumpTo])
@@ -732,20 +732,13 @@ export default function Reader() {
     if (!loading && !error && knownStamp > ownStampRef.current) adoptNewer(false)
   }, [knownStamp, loading, error, adoptNewer])
 
-  // The note after moving to another device's place disappears by itself
+  // The "Progress updated!" note after moving to another device's place: brief, and it goes by
+  // itself. Its clock starts once the view has moved (a far move loads chapters first).
   useEffect(() => {
-    if (!movedFrom) return undefined
-    const timer = setTimeout(() => setMovedFrom(null), 10000)
+    if (!updatedNote || jumping) return undefined
+    const timer = setTimeout(() => setUpdatedNote(0), 2600)
     return () => clearTimeout(timer)
-  }, [movedFrom])
-  function goBackToMyPlace() {
-    const back = movedFrom
-    setMovedFrom(null)
-    if (back) {
-      quietRef.current = false
-      jumpTo(back.index, undefined, back.fraction) // saved as the newest position once the view has moved
-    }
-  }
+  }, [updatedNote, jumping])
 
   // Native scroll, no iframe, no manager, nothing to fight. This is
   // also what tracks progress and lazily loads the next chapter.
@@ -1075,16 +1068,26 @@ export default function Reader() {
         </div>
       )}
 
-      {movedFrom && !jumping && (
+      {updatedNote > 0 && !jumping && (
+        // frosted glass in the reader's own colours, slightly see-through (88%); the look and the
+        // fade in and out are .progress-note in index.css. A new key starts it again.
         <div
+          key={updatedNote}
           role="status"
-          className="fixed left-1/2 -translate-x-1/2 bottom-20 z-30 flex items-center gap-3 px-4 py-2 rounded-full text-xs shadow-lg max-w-[calc(100vw-2rem)]"
-          style={{ background: `${t.text}e6`, color: t.bg }}
+          className="progress-note fixed left-1/2 z-30 flex items-center gap-2 rounded-full py-2 pl-2.5 pr-4 text-[13px] font-medium"
+          style={{
+            bottom: 'max(2.5rem, calc(env(safe-area-inset-bottom) + 1.5rem))',
+            background: `${t.bg}e0`,
+            color: t.text,
+            border: `1px solid ${t.text}1a`,
+            backdropFilter: 'blur(14px) saturate(1.3)',
+            WebkitBackdropFilter: 'blur(14px) saturate(1.3)',
+          }}
         >
-          <span>Moved to where you stopped on another device</span>
-          <button onClick={goBackToMyPlace} className="font-medium underline whitespace-nowrap">
-            Go back
-          </button>
+          <span className="flex h-5 w-5 items-center justify-center rounded-full" style={{ background: '#2D6A5E' }}>
+            <Check size={12} strokeWidth={3} color="#fff" aria-hidden="true" />
+          </span>
+          Progress updated!
         </div>
       )}
 

@@ -166,3 +166,29 @@ body {
   [data-drop-edge='before']::after { left: -12px; }
   [data-drop-edge='after']::after { right: -12px; }
 }
+
+@layer components {
+  /* The "Progress updated!" note in the reader, shown after the book moves to where you stopped
+     on another device. It fades in with a small rise, stays, and fades out; the whole thing takes
+     2.5 seconds and the reader removes it just after. */
+  .progress-note {
+    box-shadow: 0 8px 28px rgba(26, 24, 20, 0.14), 0 1px 3px rgba(26, 24, 20, 0.08);
+    white-space: nowrap;
+    animation: progress-note 2.5s ease both;
+  }
+  @keyframes progress-note {
+    0% { opacity: 0; transform: translate(-50%, 10px) scale(0.97); }
+    10% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+    78% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+    100% { opacity: 0; transform: translate(-50%, 0) scale(1); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .progress-note { animation-name: progress-note-still; }
+    @keyframes progress-note-still {
+      0% { opacity: 0; transform: translate(-50%, 0); }
+      10% { opacity: 1; transform: translate(-50%, 0); }
+      78% { opacity: 1; transform: translate(-50%, 0); }
+      100% { opacity: 0; transform: translate(-50%, 0); }
+    }
+  }
+}
